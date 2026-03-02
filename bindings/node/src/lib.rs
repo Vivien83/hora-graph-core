@@ -353,7 +353,7 @@ impl JsHoraCore {
     // ── Reconsolidation ──────────────────────────────────────
 
     /// Get the current reconsolidation phase for an entity.
-    /// Returns "stable", "labile", or "restabilizing". Null if entity doesn't exist.
+    /// Returns "stable", "labile", "restabilizing", or "dark". Null if entity doesn't exist.
     #[napi]
     pub fn get_memory_phase(&mut self, entity_id: u32) -> Result<Option<String>> {
         let phase = h!(Ok(self.inner.get_memory_phase(EntityId(entity_id as u64))))?;
@@ -361,6 +361,7 @@ impl JsHoraCore {
             MemoryPhase::Stable => "stable".to_string(),
             MemoryPhase::Labile { .. } => "labile".to_string(),
             MemoryPhase::Restabilizing { .. } => "restabilizing".to_string(),
+            MemoryPhase::Dark { .. } => "dark".to_string(),
         }))
     }
 
@@ -371,6 +372,33 @@ impl JsHoraCore {
         Ok(self
             .inner
             .get_stability_multiplier(EntityId(entity_id as u64)))
+    }
+
+    // ── Dark Nodes ──────────────────────────────────────────
+
+    /// Scan all entities and mark those below activation threshold as Dark.
+    /// Returns the number of entities newly marked as Dark.
+    #[napi]
+    pub fn dark_node_pass(&mut self) -> Result<u32> {
+        Ok(self.inner.dark_node_pass() as u32)
+    }
+
+    /// Attempt to recover a Dark entity. Returns true if recovery occurred.
+    #[napi]
+    pub fn attempt_recovery(&mut self, entity_id: u32) -> Result<bool> {
+        Ok(self.inner.attempt_recovery(EntityId(entity_id as u64)))
+    }
+
+    /// List all entity IDs currently in Dark state.
+    #[napi]
+    pub fn dark_nodes(&mut self) -> Result<Vec<u32>> {
+        Ok(self.inner.dark_nodes().into_iter().map(|id| id.0 as u32).collect())
+    }
+
+    /// List dark entities eligible for garbage collection.
+    #[napi]
+    pub fn gc_candidates(&mut self) -> Result<Vec<u32>> {
+        Ok(self.inner.gc_candidates().into_iter().map(|id| id.0 as u32).collect())
     }
 
     // ── Episodes ───────────────────────────────────────────

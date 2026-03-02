@@ -120,6 +120,15 @@ impl ActivationState {
     pub fn total_accesses(&self) -> u32 {
         self.historical_count + self.recent_count as u32
     }
+
+    /// Timestamp of the most recent access (epoch seconds), or `None` if never accessed.
+    pub fn last_access_time(&self) -> Option<f64> {
+        if self.recent_count > 0 {
+            Some(self.recent_accesses[self.recent_count as usize - 1])
+        } else {
+            None
+        }
+    }
 }
 
 /// Numerically stable log-sum-exp: `ln(Σ exp(xᵢ))`.

@@ -24,6 +24,12 @@ pub enum MemoryPhase {
         /// When restabilization began (epoch seconds).
         started_at: f64,
     },
+    /// Memory silenced — below activation threshold for too long.
+    /// Invisible to search by default, recoverable via strong external cue.
+    Dark {
+        /// When the entity was silenced (epoch seconds).
+        silenced_at: f64,
+    },
 }
 
 /// Configurable parameters for reconsolidation.
@@ -110,9 +116,33 @@ impl ReconsolidationState {
                         break;
                     }
                 }
+                MemoryPhase::Dark { .. } => break, // Dark is terminal until explicit recovery
             }
         }
         changed
+    }
+
+    /// Transition to Dark state (called by dark_node_pass).
+    pub fn mark_dark(&mut self, now: f64) {
+        self.phase = MemoryPhase::Dark { silenced_at: now };
+    }
+
+    /// Recover from Dark state → Labile (re-encoding via strong external cue).
+    /// Returns `true` if recovery occurred.
+    pub fn recover(&mut self, now: f64) -> bool {
+        if matches!(self.phase, MemoryPhase::Dark { .. }) {
+            self.phase = MemoryPhase::Labile {
+                destabilized_at: now,
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether this entity is in Dark state.
+    pub fn is_dark(&self) -> bool {
+        matches!(self.phase, MemoryPhase::Dark { .. })
     }
 
     /// Process a reactivation event.

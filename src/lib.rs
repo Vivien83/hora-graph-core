@@ -12,6 +12,7 @@ pub use crate::core::types::{
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
+pub use crate::memory::dark_nodes::DarkNodeParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
@@ -48,6 +49,7 @@ pub struct HoraCore {
     activation_states: HashMap<EntityId, ActivationState>,
     reconsolidation_states: HashMap<EntityId, ReconsolidationState>,
     reconsolidation_params: ReconsolidationParams,
+    dark_node_params: DarkNodeParams,
 }
 
 impl HoraCore {
@@ -64,6 +66,7 @@ impl HoraCore {
             activation_states: HashMap::new(),
             reconsolidation_states: HashMap::new(),
             reconsolidation_params: ReconsolidationParams::default(),
+            dark_node_params: DarkNodeParams::default(),
         })
     }
 
@@ -108,6 +111,7 @@ impl HoraCore {
                 activation_states: HashMap::new(),
                 reconsolidation_states: HashMap::new(),
                 reconsolidation_params: ReconsolidationParams::default(),
+                dark_node_params: DarkNodeParams::default(),
             })
         } else {
             Ok(Self {
@@ -595,11 +599,21 @@ impl HoraCore {
             None
         };
 
-        let results = search::hybrid::rrf_fuse(
+        let mut results = search::hybrid::rrf_fuse(
             vec_results.as_deref(),
             bm25_results.as_deref(),
             opts.top_k,
         );
+
+        // Filter out dark nodes unless include_dark is set
+        if !opts.include_dark {
+            results.retain(|hit| {
+                !self
+                    .reconsolidation_states
+                    .get(&hit.entity_id)
+                    .is_some_and(|r| r.is_dark())
+            });
+        }
 
         // Side-effect: record access for returned results
         for hit in &results {
@@ -665,6 +679,111 @@ impl HoraCore {
         } else {
             None
         }
+    }
+
+    // --- Dark Nodes ---
+
+    /// Scan all entities and mark those below activation threshold as Dark.
+    ///
+    /// An entity becomes Dark when:
+    /// - Its activation is below `silencing_threshold` (default -2.0)
+    /// - Its last access was more than `silencing_delay_secs` ago (default 7 days)
+    /// - It is currently in Stable state (not Labile/Restabilizing/already Dark)
+    ///
+    /// Returns the number of entities newly marked as Dark.
+    pub fn dark_node_pass(&mut self) -> usize {
+        let now = now_millis() as f64 / 1000.0;
+        let params = &self.dark_node_params;
+        let recon_params = &self.reconsolidation_params;
+
+        let mut to_darken: Vec<EntityId> = Vec::new();
+
+        for (&id, act_state) in &mut self.activation_states {
+            let activation = act_state.compute_activation(now);
+
+            // Check activation threshold
+            if activation >= params.silencing_threshold {
+                continue;
+            }
+
+            // Check delay since last access
+            let last_access = act_state.last_access_time().unwrap_or(0.0);
+            if now - last_access < params.silencing_delay_secs {
+                continue;
+            }
+
+            // Only silence Stable entities (not Labile/Restabilizing/already Dark)
+            if let Some(recon) = self.reconsolidation_states.get_mut(&id) {
+                recon.tick(now, recon_params);
+                if *recon.phase() == MemoryPhase::Stable {
+                    to_darken.push(id);
+                }
+            }
+        }
+
+        for id in &to_darken {
+            if let Some(recon) = self.reconsolidation_states.get_mut(id) {
+                recon.mark_dark(now);
+            }
+        }
+
+        to_darken.len()
+    }
+
+    /// Attempt to recover a Dark entity via strong external reactivation.
+    ///
+    /// If the entity is Dark, it transitions to Labile (for re-encoding)
+    /// and a record_access is applied. Returns `true` if recovery occurred.
+    pub fn attempt_recovery(&mut self, id: EntityId) -> bool {
+        let now = now_millis() as f64 / 1000.0;
+        let recovered = self
+            .reconsolidation_states
+            .get_mut(&id)
+            .is_some_and(|recon| recon.recover(now));
+
+        if recovered {
+            // Record the strong reactivation
+            if let Some(act_state) = self.activation_states.get_mut(&id) {
+                act_state.record_access(now);
+            }
+        }
+
+        recovered
+    }
+
+    /// List all entity IDs currently in Dark state.
+    pub fn dark_nodes(&mut self) -> Vec<EntityId> {
+        let now = now_millis() as f64 / 1000.0;
+        self.reconsolidation_states
+            .iter_mut()
+            .filter_map(|(&id, recon)| {
+                recon.tick(now, &self.reconsolidation_params);
+                if recon.is_dark() { Some(id) } else { None }
+            })
+            .collect()
+    }
+
+    /// List dark entities eligible for garbage collection (dark > gc_eligible_after_secs).
+    pub fn gc_candidates(&mut self) -> Vec<EntityId> {
+        let now = now_millis() as f64 / 1000.0;
+        let gc_after = self.dark_node_params.gc_eligible_after_secs;
+
+        self.reconsolidation_states
+            .iter_mut()
+            .filter_map(|(&id, recon)| {
+                recon.tick(now, &self.reconsolidation_params);
+                match recon.phase() {
+                    MemoryPhase::Dark { silenced_at } => {
+                        if now - silenced_at >= gc_after {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     // --- Spreading Activation ---
@@ -2207,5 +2326,164 @@ mod tests {
         state.tick(300.0, &params);
         assert_eq!(*state.phase(), MemoryPhase::Stable);
         assert!((state.stability_multiplier() - 1.5).abs() < f64::EPSILON);
+    }
+
+    // ── Dark Nodes (v0.3d) ──────────────────────────────────
+
+    #[test]
+    fn test_dark_node_pass_marks_stale_entities() {
+        use crate::memory::dark_nodes::DarkNodeParams;
+
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+
+        // Override dark params: immediate silencing (0 delay, threshold 999)
+        hora.dark_node_params = DarkNodeParams {
+            silencing_threshold: 999.0,   // everything is below this
+            silencing_delay_secs: 0.0,    // no delay
+            recovery_threshold: 1.5,
+            gc_eligible_after_secs: 0.0,
+        };
+
+        let id = hora.add_entity("node", "forgotten", None, None).unwrap();
+
+        let count = hora.dark_node_pass();
+        assert_eq!(count, 1, "Should mark 1 entity as dark");
+
+        let phase = hora.get_memory_phase(id).unwrap().clone();
+        assert!(matches!(phase, MemoryPhase::Dark { .. }), "Expected Dark, got {phase:?}");
+    }
+
+    #[test]
+    fn test_dark_node_not_silenced_if_active() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "active", None, None).unwrap();
+
+        // Access it many times → high activation
+        for _ in 0..10 {
+            hora.record_access(id);
+        }
+
+        // Default threshold is -2.0, activation should be well above
+        let count = hora.dark_node_pass();
+        assert_eq!(count, 0, "Active entity should not be silenced");
+
+        let phase = hora.get_memory_phase(id).unwrap().clone();
+        assert_ne!(phase, MemoryPhase::Dark { silenced_at: 0.0 });
+    }
+
+    #[test]
+    fn test_dark_node_invisible_in_search() {
+        use crate::memory::dark_nodes::DarkNodeParams;
+
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.dark_node_params = DarkNodeParams {
+            silencing_threshold: 999.0,
+            silencing_delay_secs: 0.0,
+            recovery_threshold: 1.5,
+            gc_eligible_after_secs: 0.0,
+        };
+        // High destabilization threshold so search() side-effect doesn't
+        // transition entity out of Stable before dark_node_pass
+        hora.reconsolidation_params.destabilization_threshold = 9999.0;
+
+        let _id = hora.add_entity("node", "invisible ghost", None, None).unwrap();
+
+        // Before dark_node_pass: entity visible in search
+        let results = hora.search(Some("ghost"), None, SearchOpts::default()).unwrap();
+        assert_eq!(results.len(), 1, "Should find entity before silencing");
+
+        hora.dark_node_pass();
+
+        // After dark_node_pass: entity invisible by default
+        let results = hora.search(Some("ghost"), None, SearchOpts::default()).unwrap();
+        assert_eq!(results.len(), 0, "Dark node should be invisible in search");
+
+        // But visible with include_dark=true
+        let results = hora.search(
+            Some("ghost"),
+            None,
+            SearchOpts { include_dark: true, ..Default::default() },
+        ).unwrap();
+        assert_eq!(results.len(), 1, "Dark node should be visible with include_dark");
+    }
+
+    #[test]
+    fn test_dark_node_recovery() {
+        use crate::memory::dark_nodes::DarkNodeParams;
+
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.dark_node_params = DarkNodeParams {
+            silencing_threshold: 999.0,
+            silencing_delay_secs: 0.0,
+            recovery_threshold: 1.5,
+            gc_eligible_after_secs: 0.0,
+        };
+
+        let id = hora.add_entity("node", "recoverable", None, None).unwrap();
+        hora.dark_node_pass();
+
+        // Entity is Dark
+        assert!(matches!(hora.get_memory_phase(id).unwrap(), MemoryPhase::Dark { .. }));
+
+        // Recovery → Labile
+        let recovered = hora.attempt_recovery(id);
+        assert!(recovered, "Recovery should succeed for dark node");
+
+        let phase = hora.get_memory_phase(id).unwrap().clone();
+        assert!(matches!(phase, MemoryPhase::Labile { .. }), "Expected Labile after recovery, got {phase:?}");
+
+        // Search should find it again
+        let results = hora.search(Some("recoverable"), None, SearchOpts::default()).unwrap();
+        assert_eq!(results.len(), 1, "Recovered entity should be searchable");
+    }
+
+    #[test]
+    fn test_dark_nodes_list() {
+        use crate::memory::dark_nodes::DarkNodeParams;
+
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.dark_node_params = DarkNodeParams {
+            silencing_threshold: 999.0,
+            silencing_delay_secs: 0.0,
+            recovery_threshold: 1.5,
+            gc_eligible_after_secs: 0.0,
+        };
+
+        let a = hora.add_entity("node", "alpha", None, None).unwrap();
+        let b = hora.add_entity("node", "bravo", None, None).unwrap();
+        hora.dark_node_pass();
+
+        let darks = hora.dark_nodes();
+        assert_eq!(darks.len(), 2);
+        assert!(darks.contains(&a));
+        assert!(darks.contains(&b));
+    }
+
+    #[test]
+    fn test_gc_candidates() {
+        use crate::memory::dark_nodes::DarkNodeParams;
+
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.dark_node_params = DarkNodeParams {
+            silencing_threshold: 999.0,
+            silencing_delay_secs: 0.0,
+            recovery_threshold: 1.5,
+            gc_eligible_after_secs: 0.0, // immediate GC eligibility
+        };
+
+        let id = hora.add_entity("node", "ancient", None, None).unwrap();
+        hora.dark_node_pass();
+
+        let gc = hora.gc_candidates();
+        assert!(gc.contains(&id), "Dark entity should be GC candidate with 0s threshold");
+    }
+
+    #[test]
+    fn test_attempt_recovery_on_non_dark_is_noop() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "stable", None, None).unwrap();
+
+        let recovered = hora.attempt_recovery(id);
+        assert!(!recovered, "Recovery on Stable entity should return false");
     }
 }
