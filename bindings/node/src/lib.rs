@@ -8,7 +8,7 @@ use napi_derive::napi;
 use hora_graph_core::{
     Edge, EdgeId, EntityId, EntityUpdate as CoreEntityUpdate, EpisodeSource,
     FactUpdate as CoreFactUpdate, HoraConfig, HoraCore as CoreHoraCore, Properties, PropertyValue,
-    TraverseOpts as CoreTraverseOpts,
+    SpreadingParams as CoreSpreadingParams, TraverseOpts as CoreTraverseOpts,
 };
 
 // ── Error conversion macro ─────────────────────────────────
@@ -77,6 +77,30 @@ pub struct JsStats {
     pub entities: u32,
     pub edges: u32,
     pub episodes: u32,
+}
+
+#[napi(object)]
+pub struct JsSpreadingParams {
+    /// Maximum associative strength (default 1.6).
+    pub s_max: Option<f64>,
+    /// Total activation weight distributed across sources (default 1.0).
+    pub w_total: Option<f64>,
+    /// Maximum propagation depth (default 3).
+    pub max_depth: Option<u32>,
+    /// Minimum absolute activation to continue propagating (default 0.01).
+    pub cutoff: Option<f64>,
+}
+
+#[napi(object)]
+pub struct JsSpreadingSource {
+    pub entity_id: u32,
+    pub weight: f64,
+}
+
+#[napi(object)]
+pub struct JsSpreadingResult {
+    pub entity_id: u32,
+    pub activation: f64,
 }
 
 // ── Conversion helpers ─────────────────────────────────────
@@ -291,6 +315,39 @@ impl JsHoraCore {
     pub fn facts_at(&self, timestamp: f64) -> Result<Vec<JsFact>> {
         let edges = h!(self.inner.facts_at(timestamp as i64))?;
         Ok(edges.into_iter().map(edge_to_js).collect())
+    }
+
+    // ── Spreading Activation ─────────────────────────────────
+
+    /// Spread activation from source entities through the knowledge graph.
+    /// Returns an array of { entityId, activation } for all reached entities.
+    #[napi]
+    pub fn spread_activation(
+        &self,
+        sources: Vec<JsSpreadingSource>,
+        params: Option<JsSpreadingParams>,
+    ) -> Result<Vec<JsSpreadingResult>> {
+        let core_sources: Vec<(EntityId, f64)> = sources
+            .into_iter()
+            .map(|s| (EntityId(s.entity_id as u64), s.weight))
+            .collect();
+        let core_params = match params {
+            Some(p) => CoreSpreadingParams {
+                s_max: p.s_max.unwrap_or(1.6),
+                w_total: p.w_total.unwrap_or(1.0),
+                max_depth: p.max_depth.unwrap_or(3) as u8,
+                cutoff: p.cutoff.unwrap_or(0.01),
+            },
+            None => CoreSpreadingParams::default(),
+        };
+        let result = h!(self.inner.spread_activation(&core_sources, &core_params))?;
+        Ok(result
+            .into_iter()
+            .map(|(id, activation)| JsSpreadingResult {
+                entity_id: id.0 as u32,
+                activation,
+            })
+            .collect())
     }
 
     // ── Episodes ───────────────────────────────────────────

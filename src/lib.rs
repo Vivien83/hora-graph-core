@@ -12,6 +12,7 @@ pub use crate::core::types::{
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
+pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -617,6 +618,37 @@ impl HoraCore {
         if let Some(state) = self.activation_states.get_mut(&id) {
             state.record_access(now);
         }
+    }
+
+    // --- Spreading Activation ---
+
+    /// Spread activation from source entities through the knowledge graph.
+    ///
+    /// Uses ACT-R fan effect: `S_ji = S_max - ln(fan)`. High-fan nodes
+    /// inhibit spreading (negative activation when fan > e^S_max ≈ 5).
+    ///
+    /// Returns accumulated activation per entity (can be negative for inhibition).
+    pub fn spread_activation(
+        &self,
+        sources: &[(EntityId, f64)],
+        params: &SpreadingParams,
+    ) -> Result<std::collections::HashMap<EntityId, f64>> {
+        let storage = &self.storage;
+        let activations = crate::memory::spreading::spread_activation(
+            sources,
+            |id| {
+                storage
+                    .get_entity_edges(id)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|e| if e.source == id { e.target } else { e.source })
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect()
+            },
+            params,
+        );
+        Ok(activations)
     }
 
     // --- Episodes ---
@@ -1932,5 +1964,118 @@ mod tests {
             act_after > act_before,
             "search should increase activation: before={act_before}, after={act_after}"
         );
+    }
+
+    // ── Spreading Activation (v0.3b) ────────────────────────
+
+    #[test]
+    fn test_spread_activation_simple() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        hora.add_fact(a, b, "link", "A-B", None).unwrap();
+
+        let params = SpreadingParams::default();
+        let result = hora.spread_activation(&[(a, 1.0)], &params).unwrap();
+
+        // B should receive positive activation (fan=1, s_ji = 1.6 - ln(1) = 1.6 > 0)
+        assert!(result.contains_key(&b));
+        assert!(result[&b] > 0.0, "B should have positive activation");
+    }
+
+    #[test]
+    fn test_spread_activation_fan_inhibition() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let hub = hora.add_entity("node", "hub", None, None).unwrap();
+        // Connect hub to 10 nodes → fan=10, s_ji = 1.6 - ln(10) ≈ -0.70
+        let mut leaves = Vec::new();
+        for i in 0..10 {
+            let leaf = hora
+                .add_entity("node", &format!("leaf{i}"), None, None)
+                .unwrap();
+            hora.add_fact(hub, leaf, "link", &format!("hub-leaf{i}"), None)
+                .unwrap();
+            leaves.push(leaf);
+        }
+
+        let params = SpreadingParams::default();
+        let result = hora.spread_activation(&[(hub, 1.0)], &params).unwrap();
+
+        // Fan=10 → negative spreading (inhibition)
+        for leaf in &leaves {
+            let act = result[leaf];
+            assert!(act < 0.0, "Leaf should have negative activation (inhibition), got {act}");
+        }
+    }
+
+    #[test]
+    fn test_spread_activation_depth_limit() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+        let d = hora.add_entity("node", "D", None, None).unwrap();
+        hora.add_fact(a, b, "link", "A-B", None).unwrap();
+        hora.add_fact(b, c, "link", "B-C", None).unwrap();
+        hora.add_fact(c, d, "link", "C-D", None).unwrap();
+
+        let params = SpreadingParams {
+            max_depth: 2,
+            ..Default::default()
+        };
+        let result = hora.spread_activation(&[(a, 1.0)], &params).unwrap();
+
+        // A, B, C should have activation; D should not (beyond depth 2)
+        assert!(result.contains_key(&a));
+        assert!(result.contains_key(&b));
+        assert!(result.contains_key(&c));
+        let d_act = result.get(&d).copied().unwrap_or(0.0);
+        assert!(d_act.abs() < f64::EPSILON, "D should have no activation at depth 2, got {d_act}");
+    }
+
+    #[test]
+    fn test_spread_activation_multiple_sources() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+        hora.add_fact(a, c, "link", "A-C", None).unwrap();
+        hora.add_fact(b, c, "link", "B-C", None).unwrap();
+
+        let params = SpreadingParams::default();
+        let result = hora
+            .spread_activation(&[(a, 1.0), (b, 1.0)], &params)
+            .unwrap();
+
+        // C receives activation from both A and B
+        let c_act = result[&c];
+        assert!(c_act > 0.0, "C should have positive activation from 2 sources, got {c_act}");
+    }
+
+    #[test]
+    fn test_spread_activation_no_edges() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "isolated", None, None).unwrap();
+
+        let params = SpreadingParams::default();
+        let result = hora.spread_activation(&[(a, 1.0)], &params).unwrap();
+
+        // Only source present, no propagation
+        assert_eq!(result.len(), 1);
+        assert!((result[&a] - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_spread_activation_cycle_terminates() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        hora.add_fact(a, b, "link", "A-B", None).unwrap();
+
+        let params = SpreadingParams::default();
+        // Should terminate without hanging (cycle via bidirectional edges)
+        let result = hora.spread_activation(&[(a, 1.0)], &params).unwrap();
+        assert!(result.contains_key(&a));
+        assert!(result.contains_key(&b));
     }
 }
