@@ -12,8 +12,10 @@ pub use crate::core::types::{
 pub use crate::error::{HoraError, Result};
 
 use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 use crate::core::types::now_millis;
+use crate::storage::format::{self, FileHeader};
 use crate::storage::memory::MemoryStorage;
 use crate::storage::traits::StorageOps;
 
@@ -33,10 +35,11 @@ pub struct HoraCore {
     next_entity_id: u64,
     next_edge_id: u64,
     next_episode_id: u64,
+    file_path: Option<PathBuf>,
 }
 
 impl HoraCore {
-    /// Create a new in-memory HoraCore instance.
+    /// Create a new in-memory HoraCore instance (no persistence).
     pub fn new(config: HoraConfig) -> Result<Self> {
         Ok(Self {
             config,
@@ -44,7 +47,116 @@ impl HoraCore {
             next_entity_id: 1,
             next_edge_id: 1,
             next_episode_id: 1,
+            file_path: None,
         })
+    }
+
+    /// Open a file-backed HoraCore instance.
+    ///
+    /// If the file exists, loads data from it. If it does not exist, creates
+    /// a new empty instance that will write to the given path on `flush()`.
+    pub fn open(path: impl AsRef<Path>, config: HoraConfig) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+
+        if path.exists() {
+            let file = std::fs::File::open(&path)?;
+            let mut reader = std::io::BufReader::new(file);
+            let graph = format::deserialize(&mut reader)?;
+
+            // Rebuild MemoryStorage from deserialized data
+            let mut storage = MemoryStorage::new();
+            for entity in graph.entities {
+                storage.put_entity(entity)?;
+            }
+            for edge in graph.edges {
+                storage.put_edge(edge)?;
+            }
+            for episode in graph.episodes {
+                storage.put_episode(episode)?;
+            }
+
+            Ok(Self {
+                config: HoraConfig {
+                    embedding_dims: graph.header.embedding_dims,
+                },
+                storage: Box::new(storage),
+                next_entity_id: graph.header.next_entity_id,
+                next_edge_id: graph.header.next_edge_id,
+                next_episode_id: graph.header.next_episode_id,
+                file_path: Some(path),
+            })
+        } else {
+            Ok(Self {
+                file_path: Some(path),
+                ..Self::new(config)?
+            })
+        }
+    }
+
+    // --- Persistence ---
+
+    /// Flush all data to the backing file.
+    ///
+    /// Writes to a temporary file first, then renames for crash safety.
+    /// Returns an error if this is an in-memory-only instance.
+    pub fn flush(&self) -> Result<()> {
+        let path = self
+            .file_path
+            .as_ref()
+            .ok_or(HoraError::InvalidFile {
+                reason: "cannot flush an in-memory-only instance",
+            })?;
+
+        let entities = self.storage.scan_all_entities()?;
+        let edges = self.storage.scan_all_edges()?;
+        let episodes = self.storage.scan_all_episodes()?;
+
+        let header = FileHeader {
+            embedding_dims: self.config.embedding_dims,
+            next_entity_id: self.next_entity_id,
+            next_edge_id: self.next_edge_id,
+            next_episode_id: self.next_episode_id,
+            entity_count: entities.len() as u32,
+            edge_count: edges.len() as u32,
+            episode_count: episodes.len() as u32,
+        };
+
+        // Write to .tmp then rename (crash-safe)
+        let tmp_path = path.with_extension("hora.tmp");
+        {
+            let file = std::fs::File::create(&tmp_path)?;
+            let mut writer = std::io::BufWriter::new(file);
+            format::serialize(&mut writer, &header, &entities, &edges, &episodes)?;
+        }
+        std::fs::rename(&tmp_path, path)?;
+
+        Ok(())
+    }
+
+    /// Copy the current state to a snapshot file.
+    ///
+    /// Flushes first if file-backed, then copies. For in-memory instances,
+    /// writes directly to the given path.
+    pub fn snapshot(&self, dest: impl AsRef<Path>) -> Result<()> {
+        let entities = self.storage.scan_all_entities()?;
+        let edges = self.storage.scan_all_edges()?;
+        let episodes = self.storage.scan_all_episodes()?;
+
+        let header = FileHeader {
+            embedding_dims: self.config.embedding_dims,
+            next_entity_id: self.next_entity_id,
+            next_edge_id: self.next_edge_id,
+            next_episode_id: self.next_episode_id,
+            entity_count: entities.len() as u32,
+            edge_count: edges.len() as u32,
+            episode_count: episodes.len() as u32,
+        };
+
+        let file = std::fs::File::create(dest)?;
+        let mut writer = std::io::BufWriter::new(file);
+        format::serialize(&mut writer, &header, &entities, &edges, &episodes)?;
+
+        Ok(())
     }
 
     // --- CRUD Entities ---
@@ -846,5 +958,227 @@ mod tests {
         let result = hora.facts_at(edge.valid_at + 1_000_000).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, f);
+    }
+
+    // --- v0.1d tests: Persistence ---
+
+    #[test]
+    fn test_persistence_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let (a_id, b_id, fact_id);
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            a_id = hora.add_entity("project", "hora", None, None).unwrap();
+            b_id = hora
+                .add_entity(
+                    "language",
+                    "Rust",
+                    Some(props! { "year" => 2015 }),
+                    None,
+                )
+                .unwrap();
+            fact_id = hora
+                .add_fact(a_id, b_id, "built_with", "hora uses Rust", Some(0.95))
+                .unwrap();
+            hora.flush().unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let stats = hora.stats().unwrap();
+            assert_eq!(stats.entities, 2);
+            assert_eq!(stats.edges, 1);
+
+            let a = hora.get_entity(a_id).unwrap().unwrap();
+            assert_eq!(a.name, "hora");
+            assert_eq!(a.entity_type, "project");
+
+            let b = hora.get_entity(b_id).unwrap().unwrap();
+            assert_eq!(b.name, "Rust");
+            assert_eq!(
+                b.properties.get("year"),
+                Some(&PropertyValue::Int(2015))
+            );
+
+            let fact = hora.get_fact(fact_id).unwrap().unwrap();
+            assert_eq!(fact.relation_type, "built_with");
+            assert_eq!(fact.confidence, 0.95);
+        }
+    }
+
+    #[test]
+    fn test_persistence_ids_continue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            hora.add_entity("a", "first", None, None).unwrap(); // id=1
+            hora.add_entity("b", "second", None, None).unwrap(); // id=2
+            hora.flush().unwrap();
+        }
+
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let id = hora.add_entity("c", "third", None, None).unwrap();
+            // ID should continue from where we left off (3), not restart at 1
+            assert_eq!(id.0, 3);
+        }
+    }
+
+    #[test]
+    fn test_persistence_with_embeddings() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut hora = HoraCore::open(&path, config.clone()).unwrap();
+            let emb = vec![1.0, 2.0, 3.0];
+            hora.add_entity("a", "x", None, Some(&emb)).unwrap();
+            hora.flush().unwrap();
+        }
+
+        {
+            let hora = HoraCore::open(&path, config).unwrap();
+            let e = hora.get_entity(EntityId(1)).unwrap().unwrap();
+            assert_eq!(e.embedding.as_ref().unwrap(), &[1.0, 2.0, 3.0]);
+        }
+    }
+
+    #[test]
+    fn test_persistence_with_episodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let a = hora.add_entity("a", "x", None, None).unwrap();
+            hora.add_episode(EpisodeSource::Conversation, "sess-1", &[a], &[])
+                .unwrap();
+            hora.flush().unwrap();
+        }
+
+        {
+            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let stats = hora.stats().unwrap();
+            assert_eq!(stats.episodes, 1);
+        }
+    }
+
+    #[test]
+    fn test_persistence_invalidated_fact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let fact_id;
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let a = hora.add_entity("a", "x", None, None).unwrap();
+            let b = hora.add_entity("b", "y", None, None).unwrap();
+            fact_id = hora.add_fact(a, b, "rel", "desc", None).unwrap();
+            hora.invalidate_fact(fact_id).unwrap();
+            hora.flush().unwrap();
+        }
+
+        {
+            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let fact = hora.get_fact(fact_id).unwrap().unwrap();
+            assert!(fact.invalid_at > 0);
+        }
+    }
+
+    #[test]
+    fn test_corrupted_file_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.hora");
+        std::fs::write(&path, b"NOT_HORA_FILE").unwrap();
+
+        let result = HoraCore::open(&path, HoraConfig::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+        let snap = dir.path().join("snapshot.hora");
+
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            hora.add_entity("project", "hora", None, None).unwrap();
+            hora.flush().unwrap();
+            hora.snapshot(&snap).unwrap();
+        }
+
+        // Open from snapshot
+        {
+            let hora = HoraCore::open(&snap, HoraConfig::default()).unwrap();
+            assert_eq!(hora.stats().unwrap().entities, 1);
+        }
+    }
+
+    #[test]
+    fn test_flush_memory_only_errors() {
+        let hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let result = hora.flush();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_snapshot_memory_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap = dir.path().join("snapshot.hora");
+
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.add_entity("project", "hora", None, None).unwrap();
+        hora.snapshot(&snap).unwrap();
+
+        let hora2 = HoraCore::open(&snap, HoraConfig::default()).unwrap();
+        assert_eq!(hora2.stats().unwrap().entities, 1);
+    }
+
+    #[test]
+    fn test_persistence_all_property_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            hora.add_entity(
+                "test",
+                "props",
+                Some(props! {
+                    "name" => "hora",
+                    "stars" => 42,
+                    "score" => 3.14,
+                    "active" => true
+                }),
+                None,
+            )
+            .unwrap();
+            hora.flush().unwrap();
+        }
+
+        {
+            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let e = hora.get_entity(EntityId(1)).unwrap().unwrap();
+            assert_eq!(
+                e.properties.get("name"),
+                Some(&PropertyValue::String("hora".into()))
+            );
+            assert_eq!(e.properties.get("stars"), Some(&PropertyValue::Int(42)));
+            assert_eq!(
+                e.properties.get("score"),
+                Some(&PropertyValue::Float(3.14))
+            );
+            assert_eq!(
+                e.properties.get("active"),
+                Some(&PropertyValue::Bool(true))
+            );
+        }
     }
 }

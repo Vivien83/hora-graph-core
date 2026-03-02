@@ -105,8 +105,16 @@ impl StorageOps for MemoryStorage {
         Ok(true)
     }
 
+    fn scan_all_entities(&self) -> Result<Vec<Entity>> {
+        Ok(self.entities.values().cloned().collect())
+    }
+
     fn scan_all_edges(&self) -> Result<Vec<Edge>> {
         Ok(self.edges.values().cloned().collect())
+    }
+
+    fn scan_all_episodes(&self) -> Result<Vec<Episode>> {
+        Ok(self.episodes.clone())
     }
 
     fn put_episode(&mut self, episode: Episode) -> Result<()> {
