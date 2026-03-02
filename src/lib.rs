@@ -13,6 +13,7 @@ pub use crate::core::types::{
 };
 pub use crate::error::{HoraError, Result};
 pub use crate::memory::dark_nodes::DarkNodeParams;
+pub use crate::memory::fsrs::FsrsParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
@@ -22,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::types::now_millis;
 use crate::memory::activation::ActivationState;
+use crate::memory::fsrs::FsrsState;
 use crate::memory::reconsolidation::ReconsolidationState;
 use crate::search::bm25::{self, Bm25Index};
 use crate::storage::format::{self, FileHeader};
@@ -50,6 +52,8 @@ pub struct HoraCore {
     reconsolidation_states: HashMap<EntityId, ReconsolidationState>,
     reconsolidation_params: ReconsolidationParams,
     dark_node_params: DarkNodeParams,
+    fsrs_states: HashMap<EntityId, FsrsState>,
+    fsrs_params: FsrsParams,
 }
 
 impl HoraCore {
@@ -67,6 +71,8 @@ impl HoraCore {
             reconsolidation_states: HashMap::new(),
             reconsolidation_params: ReconsolidationParams::default(),
             dark_node_params: DarkNodeParams::default(),
+            fsrs_states: HashMap::new(),
+            fsrs_params: FsrsParams::default(),
         })
     }
 
@@ -112,6 +118,8 @@ impl HoraCore {
                 reconsolidation_states: HashMap::new(),
                 reconsolidation_params: ReconsolidationParams::default(),
                 dark_node_params: DarkNodeParams::default(),
+                fsrs_states: HashMap::new(),
+                fsrs_params: FsrsParams::default(),
             })
         } else {
             Ok(Self {
@@ -258,6 +266,12 @@ impl HoraCore {
         self.reconsolidation_states
             .insert(id, ReconsolidationState::new());
 
+        // Initialize FSRS state
+        self.fsrs_states.insert(
+            id,
+            FsrsState::new(now_secs, self.fsrs_params.initial_stability_days),
+        );
+
         self.storage.put_entity(entity)?;
         Ok(id)
     }
@@ -328,6 +342,7 @@ impl HoraCore {
         self.bm25_index.remove_document(id.0 as u32);
         self.activation_states.remove(&id);
         self.reconsolidation_states.remove(&id);
+        self.fsrs_states.remove(&id);
         Ok(())
     }
 
@@ -650,6 +665,16 @@ impl HoraCore {
             if let Some(recon) = self.reconsolidation_states.get_mut(&id) {
                 recon.on_reactivation(activation, now, &self.reconsolidation_params);
             }
+
+            // FSRS: record review with reconsolidation boost
+            let boost = self
+                .reconsolidation_states
+                .get(&id)
+                .map(|r| r.stability_multiplier())
+                .unwrap_or(1.0);
+            if let Some(fsrs) = self.fsrs_states.get_mut(&id) {
+                fsrs.record_review(now, boost, &self.fsrs_params);
+            }
         }
     }
 
@@ -679,6 +704,36 @@ impl HoraCore {
         } else {
             None
         }
+    }
+
+    // --- FSRS Scheduling ---
+
+    /// Get the current retrievability for an entity (0.0 to 1.0).
+    ///
+    /// R = 1.0 immediately after review, R → 0.0 as time passes.
+    /// Returns `None` if the entity doesn't exist.
+    pub fn get_retrievability(&self, id: EntityId) -> Option<f64> {
+        let now = now_millis() as f64 / 1000.0;
+        self.fsrs_states
+            .get(&id)
+            .map(|fsrs| fsrs.current_retrievability(now, &self.fsrs_params))
+    }
+
+    /// Get the optimal next review interval in days for an entity.
+    ///
+    /// Uses the configured `desired_retention` (default 0.9).
+    /// Returns `None` if the entity doesn't exist.
+    pub fn get_next_review_days(&self, id: EntityId) -> Option<f64> {
+        self.fsrs_states.get(&id).map(|fsrs| {
+            fsrs.next_review_interval_days(self.fsrs_params.desired_retention, &self.fsrs_params)
+        })
+    }
+
+    /// Get the current FSRS stability in days for an entity.
+    ///
+    /// Returns `None` if the entity doesn't exist.
+    pub fn get_fsrs_stability(&self, id: EntityId) -> Option<f64> {
+        self.fsrs_states.get(&id).map(|fsrs| fsrs.stability_days())
     }
 
     // --- Dark Nodes ---
@@ -2485,5 +2540,78 @@ mod tests {
 
         let recovered = hora.attempt_recovery(id);
         assert!(!recovered, "Recovery on Stable entity should return false");
+    }
+
+    // ── FSRS Scheduling (v0.3e) ─────────────────────────────
+
+    #[test]
+    fn test_fsrs_retrievability_starts_at_1() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "fresh", None, None).unwrap();
+        // Entity was just created, so retrievability should be ~1.0
+        let r = hora.get_retrievability(id).unwrap();
+        assert!(
+            r > 0.99,
+            "Retrievability should be ~1.0 right after creation, got {r}"
+        );
+    }
+
+    #[test]
+    fn test_fsrs_stability_initial() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "stable", None, None).unwrap();
+        let s = hora.get_fsrs_stability(id).unwrap();
+        assert!(
+            (s - 1.0).abs() < f64::EPSILON,
+            "Initial stability should be 1.0 day, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_fsrs_next_review_days() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "reviewable", None, None).unwrap();
+        let interval = hora.get_next_review_days(id).unwrap();
+        // With default r=0.9, interval should ≈ S = 1.0 day
+        assert!(
+            (interval - 1.0).abs() < 0.1,
+            "Next review interval should be ~1 day, got {interval}"
+        );
+    }
+
+    #[test]
+    fn test_fsrs_stability_increases_with_access() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "learning", None, None).unwrap();
+
+        let s_before = hora.get_fsrs_stability(id).unwrap();
+
+        // Multiple accesses → record_review with boost from reconsolidation
+        for _ in 0..5 {
+            hora.record_access(id);
+        }
+
+        let s_after = hora.get_fsrs_stability(id).unwrap();
+        assert!(
+            s_after >= s_before,
+            "Stability should not decrease with reviews: before={s_before}, after={s_after}"
+        );
+    }
+
+    #[test]
+    fn test_fsrs_none_for_unknown_entity() {
+        let hora = HoraCore::new(HoraConfig::default()).unwrap();
+        assert!(hora.get_retrievability(EntityId(9999)).is_none());
+        assert!(hora.get_next_review_days(EntityId(9999)).is_none());
+        assert!(hora.get_fsrs_stability(EntityId(9999)).is_none());
+    }
+
+    #[test]
+    fn test_fsrs_removed_on_delete() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "temp", None, None).unwrap();
+        assert!(hora.get_retrievability(id).is_some());
+        hora.delete_entity(id).unwrap();
+        assert!(hora.get_retrievability(id).is_none());
     }
 }

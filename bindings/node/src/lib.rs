@@ -374,6 +374,26 @@ impl JsHoraCore {
             .get_stability_multiplier(EntityId(entity_id as u64)))
     }
 
+    // ── FSRS Scheduling ─────────────────────────────────────
+
+    /// Get the current retrievability for an entity (0.0 to 1.0).
+    #[napi]
+    pub fn get_retrievability(&self, entity_id: u32) -> Result<Option<f64>> {
+        Ok(self.inner.get_retrievability(EntityId(entity_id as u64)))
+    }
+
+    /// Get the optimal next review interval in days for an entity.
+    #[napi]
+    pub fn get_next_review_days(&self, entity_id: u32) -> Result<Option<f64>> {
+        Ok(self.inner.get_next_review_days(EntityId(entity_id as u64)))
+    }
+
+    /// Get the current FSRS stability in days for an entity.
+    #[napi]
+    pub fn get_fsrs_stability(&self, entity_id: u32) -> Result<Option<f64>> {
+        Ok(self.inner.get_fsrs_stability(EntityId(entity_id as u64)))
+    }
+
     // ── Dark Nodes ──────────────────────────────────────────
 
     /// Scan all entities and mark those below activation threshold as Dark.
