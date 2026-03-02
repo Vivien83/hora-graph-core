@@ -166,7 +166,7 @@ impl JsHoraCore {
 
     /// Get an entity by ID. Returns null if not found.
     #[napi]
-    pub fn get_entity(&self, id: u32) -> Result<Option<JsEntity>> {
+    pub fn get_entity(&mut self, id: u32) -> Result<Option<JsEntity>> {
         let entity = h!(self.inner.get_entity(EntityId(id as u64)))?;
         Ok(entity.map(|e| JsEntity {
             id: e.id.0 as u32,

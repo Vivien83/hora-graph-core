@@ -1,5 +1,6 @@
 pub mod core;
 pub mod error;
+pub mod memory;
 pub mod search;
 pub mod storage;
 
@@ -13,10 +14,11 @@ pub use crate::core::types::{
 pub use crate::error::{HoraError, Result};
 pub use crate::search::{SearchHit, SearchOpts};
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::core::types::now_millis;
+use crate::memory::activation::ActivationState;
 use crate::search::bm25::{self, Bm25Index};
 use crate::storage::format::{self, FileHeader};
 use crate::storage::memory::MemoryStorage;
@@ -40,6 +42,7 @@ pub struct HoraCore {
     next_episode_id: u64,
     file_path: Option<PathBuf>,
     bm25_index: Bm25Index,
+    activation_states: HashMap<EntityId, ActivationState>,
 }
 
 impl HoraCore {
@@ -53,6 +56,7 @@ impl HoraCore {
             next_episode_id: 1,
             file_path: None,
             bm25_index: Bm25Index::new(),
+            activation_states: HashMap::new(),
         })
     }
 
@@ -94,6 +98,7 @@ impl HoraCore {
                 next_episode_id: graph.header.next_episode_id,
                 file_path: Some(path),
                 bm25_index: bm25,
+                activation_states: HashMap::new(),
             })
         } else {
             Ok(Self {
@@ -230,13 +235,25 @@ impl HoraCore {
         let text = bm25::entity_text(&entity.name, &entity.properties);
         self.bm25_index.index_document(id.0 as u32, &text);
 
+        // Initialize activation state
+        let now_secs = entity.created_at as f64 / 1000.0;
+        let mut act_state = ActivationState::new(now_secs);
+        act_state.record_access(now_secs);
+        self.activation_states.insert(id, act_state);
+
         self.storage.put_entity(entity)?;
         Ok(id)
     }
 
     /// Get an entity by ID. Returns `None` if not found.
-    pub fn get_entity(&self, id: EntityId) -> Result<Option<Entity>> {
-        self.storage.get_entity(id)
+    ///
+    /// Side-effect: records an access for ACT-R activation tracking.
+    pub fn get_entity(&mut self, id: EntityId) -> Result<Option<Entity>> {
+        let entity = self.storage.get_entity(id)?;
+        if entity.is_some() {
+            self.record_access(id);
+        }
+        Ok(entity)
     }
 
     /// Update an entity. Only fields set to `Some` in the update are changed.
@@ -292,6 +309,7 @@ impl HoraCore {
 
         self.storage.delete_entity(id)?;
         self.bm25_index.remove_document(id.0 as u32);
+        self.activation_states.remove(&id);
         Ok(())
     }
 
@@ -563,11 +581,42 @@ impl HoraCore {
             None
         };
 
-        Ok(search::hybrid::rrf_fuse(
+        let results = search::hybrid::rrf_fuse(
             vec_results.as_deref(),
             bm25_results.as_deref(),
             opts.top_k,
-        ))
+        );
+
+        // Side-effect: record access for returned results
+        for hit in &results {
+            self.record_access(hit.entity_id);
+        }
+
+        Ok(results)
+    }
+
+    // --- Activation (ACT-R) ---
+
+    /// Get the current ACT-R base-level activation for an entity.
+    ///
+    /// Returns `f64::NEG_INFINITY` if the entity has never been accessed,
+    /// or `None` if the entity doesn't exist.
+    pub fn get_activation(&mut self, id: EntityId) -> Option<f64> {
+        let now = now_millis() as f64 / 1000.0;
+        self.activation_states
+            .get_mut(&id)
+            .map(|state| state.compute_activation(now))
+    }
+
+    /// Record an access on an entity for ACT-R activation tracking.
+    ///
+    /// Called automatically by `get_entity()` and `search()`. Can also be
+    /// called directly for external access events.
+    pub fn record_access(&mut self, id: EntityId) {
+        let now = now_millis() as f64 / 1000.0;
+        if let Some(state) = self.activation_states.get_mut(&id) {
+            state.record_access(now);
+        }
     }
 
     // --- Episodes ---
@@ -639,7 +688,7 @@ mod tests {
 
     #[test]
     fn test_entity_not_found() {
-        let hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let result = hora.get_entity(EntityId(999)).unwrap();
         assert!(result.is_none());
     }
@@ -1110,7 +1159,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
             let stats = hora.stats().unwrap();
             assert_eq!(stats.entities, 2);
             assert_eq!(stats.edges, 1);
@@ -1166,7 +1215,7 @@ mod tests {
         }
 
         {
-            let hora = HoraCore::open(&path, config).unwrap();
+            let mut hora = HoraCore::open(&path, config).unwrap();
             let e = hora.get_entity(EntityId(1)).unwrap().unwrap();
             assert_eq!(e.embedding.as_ref().unwrap(), &[1.0, 2.0, 3.0]);
         }
@@ -1287,7 +1336,7 @@ mod tests {
         }
 
         {
-            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
             let e = hora.get_entity(EntityId(1)).unwrap().unwrap();
             assert_eq!(
                 e.properties.get("name"),
@@ -1805,5 +1854,83 @@ mod tests {
             .unwrap();
 
         assert_eq!(id1, id2);
+    }
+
+    // --- v0.3a tests: ACT-R Activation ---
+
+    #[test]
+    fn test_activation_exists_after_creation() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("a", "test", None, None).unwrap();
+
+        let act = hora.get_activation(id);
+        assert!(act.is_some());
+        // Activation should be finite (1 access at creation)
+        assert!(act.unwrap().is_finite());
+    }
+
+    #[test]
+    fn test_activation_increases_with_access() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("a", "test", None, None).unwrap();
+
+        let act_before = hora.get_activation(id).unwrap();
+        // get_entity records an access
+        let _ = hora.get_entity(id).unwrap();
+        let act_after = hora.get_activation(id).unwrap();
+
+        // More accesses → higher activation
+        assert!(
+            act_after > act_before,
+            "act_after={act_after} should be > act_before={act_before}"
+        );
+    }
+
+    #[test]
+    fn test_activation_none_for_unknown_entity() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        assert!(hora.get_activation(EntityId(999)).is_none());
+    }
+
+    #[test]
+    fn test_activation_removed_on_delete() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("a", "test", None, None).unwrap();
+
+        assert!(hora.get_activation(id).is_some());
+        hora.delete_entity(id).unwrap();
+        assert!(hora.get_activation(id).is_none());
+    }
+
+    #[test]
+    fn test_record_access_manually() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("a", "test", None, None).unwrap();
+
+        let act_before = hora.get_activation(id).unwrap();
+        hora.record_access(id);
+        hora.record_access(id);
+        hora.record_access(id);
+        let act_after = hora.get_activation(id).unwrap();
+
+        assert!(act_after > act_before);
+    }
+
+    #[test]
+    fn test_search_records_access_side_effect() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("a", "rust language", None, None).unwrap();
+
+        let act_before = hora.get_activation(id).unwrap();
+
+        // text_search doesn't record access, but search() does
+        hora.search(Some("rust"), None, SearchOpts::default())
+            .unwrap();
+
+        let act_after = hora.get_activation(id).unwrap();
+        assert!(
+            act_after > act_before,
+            "search should increase activation: before={act_before}, after={act_after}"
+        );
     }
 }
