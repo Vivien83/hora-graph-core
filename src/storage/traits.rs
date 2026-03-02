@@ -8,7 +8,7 @@ use crate::error::Result;
 ///
 /// All backends implement the same trait so the engine behaves identically
 /// regardless of the underlying storage.
-pub trait StorageOps {
+pub trait StorageOps: Send {
     // --- Entities ---
     fn put_entity(&mut self, entity: Entity) -> Result<()>;
     fn get_entity(&self, id: EntityId) -> Result<Option<Entity>>;
