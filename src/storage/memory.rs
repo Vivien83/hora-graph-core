@@ -105,6 +105,10 @@ impl StorageOps for MemoryStorage {
         Ok(true)
     }
 
+    fn scan_all_edges(&self) -> Result<Vec<Edge>> {
+        Ok(self.edges.values().cloned().collect())
+    }
+
     fn put_episode(&mut self, episode: Episode) -> Result<()> {
         self.episodes.push(episode);
         Ok(())

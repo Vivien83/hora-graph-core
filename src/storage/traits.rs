@@ -24,6 +24,10 @@ pub trait StorageOps {
     // --- Episodes ---
     fn put_episode(&mut self, episode: Episode) -> Result<()>;
 
+    // --- Scan ---
+    /// Return all edges in storage. Used for temporal queries.
+    fn scan_all_edges(&self) -> Result<Vec<Edge>>;
+
     // --- Stats ---
     fn stats(&self) -> StorageStats;
 }

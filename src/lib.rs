@@ -7,9 +7,11 @@ pub use crate::core::entity::Entity;
 pub use crate::core::episode::Episode;
 pub use crate::core::types::{
     EdgeId, EntityId, EntityUpdate, EpisodeSource, FactUpdate, HoraConfig, Properties,
-    PropertyValue, StorageStats,
+    PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
+
+use std::collections::{HashSet, VecDeque};
 
 use crate::core::types::now_millis;
 use crate::storage::memory::MemoryStorage;
@@ -236,6 +238,101 @@ impl HoraCore {
     /// Get all facts where the given entity is source or target.
     pub fn get_entity_facts(&self, entity_id: EntityId) -> Result<Vec<Edge>> {
         self.storage.get_entity_edges(entity_id)
+    }
+
+    // --- Graph Traversal ---
+
+    /// BFS traversal from a start entity up to the given depth.
+    ///
+    /// Returns IDs of all discovered entities and edges.
+    /// Depth 0 returns only the start entity (no edges).
+    pub fn traverse(&self, start: EntityId, opts: TraverseOpts) -> Result<TraverseResult> {
+        if self.storage.get_entity(start)?.is_none() {
+            return Err(HoraError::EntityNotFound(start.0));
+        }
+
+        let mut visited: HashSet<EntityId> = HashSet::new();
+        let mut result_entity_ids = vec![start];
+        let mut result_edge_ids: Vec<EdgeId> = Vec::new();
+        let mut seen_edges: HashSet<EdgeId> = HashSet::new();
+
+        visited.insert(start);
+
+        // BFS queue holds (entity_id, current_depth)
+        let mut queue: VecDeque<(EntityId, u32)> = VecDeque::new();
+        queue.push_back((start, 0));
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= opts.depth {
+                continue;
+            }
+
+            let edges = self.storage.get_entity_edges(current_id)?;
+            for edge in edges {
+                if !seen_edges.insert(edge.id) {
+                    continue;
+                }
+
+                // The neighbor is whichever end is NOT current_id
+                let neighbor_id = if edge.source == current_id {
+                    edge.target
+                } else {
+                    edge.source
+                };
+
+                result_edge_ids.push(edge.id);
+
+                if visited.insert(neighbor_id)
+                    && self.storage.get_entity(neighbor_id)?.is_some()
+                {
+                    result_entity_ids.push(neighbor_id);
+                    queue.push_back((neighbor_id, depth + 1));
+                }
+            }
+        }
+
+        Ok(TraverseResult {
+            entity_ids: result_entity_ids,
+            edge_ids: result_edge_ids,
+        })
+    }
+
+    /// Get all direct neighbor entity IDs (connected via any edge).
+    pub fn neighbors(&self, entity_id: EntityId) -> Result<Vec<EntityId>> {
+        let edges = self.storage.get_entity_edges(entity_id)?;
+        let mut neighbor_ids: HashSet<EntityId> = HashSet::new();
+
+        for edge in &edges {
+            if edge.source == entity_id {
+                neighbor_ids.insert(edge.target);
+            } else {
+                neighbor_ids.insert(edge.source);
+            }
+        }
+
+        // Remove self (possible with self-loops)
+        neighbor_ids.remove(&entity_id);
+        Ok(neighbor_ids.into_iter().collect())
+    }
+
+    /// Timeline of all facts involving an entity, sorted by `valid_at`.
+    pub fn timeline(&self, entity_id: EntityId) -> Result<Vec<Edge>> {
+        let mut edges = self.storage.get_entity_edges(entity_id)?;
+        edges.sort_by_key(|e| e.valid_at);
+        Ok(edges)
+    }
+
+    /// All facts valid at a given point in time.
+    ///
+    /// A fact is valid at time `t` if `valid_at <= t` and
+    /// (`invalid_at == 0` or `invalid_at > t`).
+    pub fn facts_at(&self, t: i64) -> Result<Vec<Edge>> {
+        let all = self.storage.scan_all_edges()?;
+        let valid: Vec<Edge> = all
+            .into_iter()
+            .filter(|e| e.valid_at <= t && (e.invalid_at == 0 || e.invalid_at > t))
+            .collect();
+        Ok(valid)
     }
 
     // --- Episodes ---
@@ -586,5 +683,168 @@ mod tests {
 
         assert_eq!(hora.stats().unwrap().entities, 1);
         assert_eq!(hora.stats().unwrap().edges, 0); // cascade
+    }
+
+    // --- v0.1c tests: Graph Traversal ---
+
+    #[test]
+    fn test_bfs_depth_2() {
+        // A -> B -> C -> D
+        // traverse(A, depth=2) should return {A, B, C} but not D
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+        let d = hora.add_entity("node", "D", None, None).unwrap();
+
+        hora.add_fact(a, b, "link", "A->B", None).unwrap();
+        hora.add_fact(b, c, "link", "B->C", None).unwrap();
+        hora.add_fact(c, d, "link", "C->D", None).unwrap();
+
+        let result = hora.traverse(a, TraverseOpts { depth: 2 }).unwrap();
+
+        assert!(result.entity_ids.contains(&a));
+        assert!(result.entity_ids.contains(&b));
+        assert!(result.entity_ids.contains(&c));
+        assert!(!result.entity_ids.contains(&d));
+        assert_eq!(result.entity_ids.len(), 3);
+        assert_eq!(result.edge_ids.len(), 2); // A->B and B->C
+    }
+
+    #[test]
+    fn test_bfs_depth_0() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        hora.add_fact(a, b, "link", "A->B", None).unwrap();
+
+        let result = hora.traverse(a, TraverseOpts { depth: 0 }).unwrap();
+        assert_eq!(result.entity_ids.len(), 1);
+        assert_eq!(result.entity_ids[0], a);
+        assert_eq!(result.edge_ids.len(), 0);
+    }
+
+    #[test]
+    fn test_bfs_cycle() {
+        // A -> B -> C -> A (cycle)
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+
+        hora.add_fact(a, b, "link", "A->B", None).unwrap();
+        hora.add_fact(b, c, "link", "B->C", None).unwrap();
+        hora.add_fact(c, a, "link", "C->A", None).unwrap();
+
+        // Should not infinite loop, and should find all 3 nodes
+        let result = hora.traverse(a, TraverseOpts { depth: 10 }).unwrap();
+        assert_eq!(result.entity_ids.len(), 3);
+        assert_eq!(result.edge_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_bfs_isolated_node() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "lonely", None, None).unwrap();
+
+        let result = hora.traverse(a, TraverseOpts { depth: 5 }).unwrap();
+        assert_eq!(result.entity_ids.len(), 1);
+        assert_eq!(result.edge_ids.len(), 0);
+    }
+
+    #[test]
+    fn test_bfs_not_found() {
+        let hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let result = hora.traverse(EntityId(999), TraverseOpts::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_neighbors() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+        let d = hora.add_entity("node", "D", None, None).unwrap();
+
+        hora.add_fact(a, b, "link", "A->B", None).unwrap();
+        hora.add_fact(a, c, "link", "A->C", None).unwrap();
+        // D is not connected to A
+
+        let mut neighbors = hora.neighbors(a).unwrap();
+        neighbors.sort();
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&b));
+        assert!(neighbors.contains(&c));
+        assert!(!neighbors.contains(&d));
+    }
+
+    #[test]
+    fn test_timeline_ordered() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("person", "Alice", None, None).unwrap();
+        let b = hora.add_entity("company", "Acme", None, None).unwrap();
+        let c = hora.add_entity("company", "BigCorp", None, None).unwrap();
+
+        // Create facts — since they're created sequentially, valid_at increases
+        let f1 = hora.add_fact(a, b, "works_at", "Alice at Acme", None).unwrap();
+        let f2 = hora.add_fact(a, c, "works_at", "Alice at BigCorp", None).unwrap();
+
+        let tl = hora.timeline(a).unwrap();
+        assert_eq!(tl.len(), 2);
+        assert_eq!(tl[0].id, f1);
+        assert_eq!(tl[1].id, f2);
+        assert!(tl[0].valid_at <= tl[1].valid_at);
+    }
+
+    #[test]
+    fn test_facts_at_bitemporal() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("a", "x", None, None).unwrap();
+        let b = hora.add_entity("b", "y", None, None).unwrap();
+
+        // Manually craft edges with controlled timestamps via add_fact + update
+        let f1 = hora.add_fact(a, b, "rel", "fact1", None).unwrap();
+        let f2 = hora.add_fact(a, b, "rel2", "fact2", None).unwrap();
+
+        // Get the actual timestamps so we can reason about them
+        let e1 = hora.get_fact(f1).unwrap().unwrap();
+        let e2 = hora.get_fact(f2).unwrap().unwrap();
+
+        // Invalidate f1 — sets invalid_at to now
+        hora.invalidate_fact(f1).unwrap();
+        let e1_after = hora.get_fact(f1).unwrap().unwrap();
+
+        // facts_at(before everything) = nothing
+        let before = hora.facts_at(e1.valid_at - 1).unwrap();
+        assert_eq!(before.len(), 0);
+
+        // facts_at(between creation and invalidation) = both
+        // Since f1 was valid from e1.valid_at until e1_after.invalid_at,
+        // and f2 was valid from e2.valid_at with no end,
+        // at time e2.valid_at both should be visible (before invalidation timestamp)
+        let mid = hora.facts_at(e2.valid_at).unwrap();
+        // f1 is still valid here (valid_at <= t, invalid_at > t because invalidation happens after)
+        assert!(mid.iter().any(|e| e.id == f2));
+
+        // facts_at(well into the future) = only f2 (f1 is invalidated)
+        let future = hora.facts_at(e1_after.invalid_at + 1000).unwrap();
+        assert!(future.iter().any(|e| e.id == f2));
+        assert!(!future.iter().any(|e| e.id == f1));
+    }
+
+    #[test]
+    fn test_facts_at_never_invalidated() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("a", "x", None, None).unwrap();
+        let b = hora.add_entity("b", "y", None, None).unwrap();
+        let f = hora.add_fact(a, b, "rel", "always valid", None).unwrap();
+
+        let edge = hora.get_fact(f).unwrap().unwrap();
+
+        // A fact with invalid_at=0 is valid at any time >= valid_at
+        let result = hora.facts_at(edge.valid_at + 1_000_000).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, f);
     }
 }

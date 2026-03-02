@@ -101,6 +101,28 @@ pub struct FactUpdate {
     pub description: Option<std::string::String>,
 }
 
+/// Options for graph traversal (BFS).
+#[derive(Debug, Clone)]
+pub struct TraverseOpts {
+    /// Maximum depth of the BFS. 0 = start node only.
+    pub depth: u32,
+}
+
+impl Default for TraverseOpts {
+    fn default() -> Self {
+        Self { depth: 3 }
+    }
+}
+
+/// Result of a graph traversal.
+#[derive(Debug, Clone)]
+pub struct TraverseResult {
+    /// All entity IDs discovered during traversal, starting with the start node.
+    pub entity_ids: Vec<EntityId>,
+    /// All edge IDs traversed.
+    pub edge_ids: Vec<EdgeId>,
+}
+
 /// Source of an episode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EpisodeSource {
