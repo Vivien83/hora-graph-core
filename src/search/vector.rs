@@ -6,13 +6,7 @@
 use std::sync::OnceLock;
 
 use crate::core::types::EntityId;
-
-/// A search result: entity ID + similarity score.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchHit {
-    pub entity_id: EntityId,
-    pub score: f32,
-}
+use crate::search::SearchHit;
 
 // ── Dispatch ──────────────────────────────────────────────────────
 

@@ -25,3 +25,7 @@ harness = false
 [[bench]]
 name = "vector_search"
 harness = false
+
+[[bench]]
+name = "bm25"
+harness = false

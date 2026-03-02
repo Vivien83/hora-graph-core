@@ -11,12 +11,13 @@ pub use crate::core::types::{
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
-pub use crate::search::vector::SearchHit;
+pub use crate::search::SearchHit;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::core::types::now_millis;
+use crate::search::bm25::{self, Bm25Index};
 use crate::storage::format::{self, FileHeader};
 use crate::storage::memory::MemoryStorage;
 use crate::storage::traits::StorageOps;
@@ -38,6 +39,7 @@ pub struct HoraCore {
     next_edge_id: u64,
     next_episode_id: u64,
     file_path: Option<PathBuf>,
+    bm25_index: Bm25Index,
 }
 
 impl HoraCore {
@@ -50,6 +52,7 @@ impl HoraCore {
             next_edge_id: 1,
             next_episode_id: 1,
             file_path: None,
+            bm25_index: Bm25Index::new(),
         })
     }
 
@@ -65,9 +68,12 @@ impl HoraCore {
             let mut reader = std::io::BufReader::new(file);
             let graph = format::deserialize(&mut reader)?;
 
-            // Rebuild MemoryStorage from deserialized data
+            // Rebuild MemoryStorage and BM25 index from deserialized data
             let mut storage = MemoryStorage::new();
+            let mut bm25 = Bm25Index::new();
             for entity in graph.entities {
+                let text = bm25::entity_text(&entity.name, &entity.properties);
+                bm25.index_document(entity.id.0 as u32, &text);
                 storage.put_entity(entity)?;
             }
             for edge in graph.edges {
@@ -86,6 +92,7 @@ impl HoraCore {
                 next_edge_id: graph.header.next_edge_id,
                 next_episode_id: graph.header.next_episode_id,
                 file_path: Some(path),
+                bm25_index: bm25,
             })
         } else {
             Ok(Self {
@@ -201,6 +208,10 @@ impl HoraCore {
             created_at: now_millis(),
         };
 
+        // Index for BM25 full-text search
+        let text = bm25::entity_text(&entity.name, &entity.properties);
+        self.bm25_index.index_document(id.0 as u32, &text);
+
         self.storage.put_entity(entity)?;
         Ok(id)
     }
@@ -242,6 +253,10 @@ impl HoraCore {
             entity.embedding = Some(embedding);
         }
 
+        // Re-index for BM25
+        let text = bm25::entity_text(&entity.name, &entity.properties);
+        self.bm25_index.index_document(id.0 as u32, &text);
+
         self.storage.put_entity(entity)
     }
 
@@ -258,6 +273,7 @@ impl HoraCore {
         }
 
         self.storage.delete_entity(id)?;
+        self.bm25_index.remove_document(id.0 as u32);
         Ok(())
     }
 
@@ -478,6 +494,16 @@ impl HoraCore {
             .collect();
 
         Ok(search::vector::top_k_brute_force(query, &with_embeddings, k))
+    }
+
+    // --- Text Search (BM25) ---
+
+    /// Full-text search using BM25+ scoring over entity names and string properties.
+    ///
+    /// Returns the top `k` matching entities. Entities without indexable text
+    /// are invisible to BM25.
+    pub fn text_search(&mut self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
+        Ok(self.bm25_index.search(query, k))
     }
 
     // --- Episodes ---
@@ -1323,6 +1349,126 @@ mod tests {
         let results = hora.vector_search(&[1.0, 0.0, 0.0], 3).unwrap();
         for w in results.windows(2) {
             assert!(w[0].score >= w[1].score);
+        }
+    }
+
+    // --- v0.2b tests: BM25 Text Search ---
+
+    #[test]
+    fn test_text_search_finds_by_name() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.add_entity("project", "hora graph engine", None, None)
+            .unwrap();
+        hora.add_entity("language", "Rust programming", None, None)
+            .unwrap();
+
+        let results = hora.text_search("hora", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entity_id, EntityId(1));
+    }
+
+    #[test]
+    fn test_text_search_finds_by_properties() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.add_entity(
+            "project",
+            "hora",
+            Some(props! { "description" => "knowledge graph authentication engine" }),
+            None,
+        )
+        .unwrap();
+        hora.add_entity("other", "unrelated", None, None).unwrap();
+
+        let results = hora.text_search("authentication", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entity_id, EntityId(1));
+    }
+
+    #[test]
+    fn test_text_search_tf_ranking() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        // Same doc length, but entity 1 has "rust" 3 times vs entity 2's 1 time
+        hora.add_entity(
+            "a",
+            "rust rust rust",
+            None,
+            None,
+        )
+        .unwrap();
+        hora.add_entity("b", "rust java python", None, None)
+            .unwrap();
+
+        let results = hora.text_search("rust", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        // More occurrences (same length) → higher score
+        assert_eq!(results[0].entity_id, EntityId(1));
+        assert!(results[0].score > results[1].score);
+    }
+
+    #[test]
+    fn test_text_search_no_match() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.add_entity("project", "hora", None, None).unwrap();
+
+        let results = hora.text_search("nonexistent", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_text_search_respects_delete() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora
+            .add_entity("project", "hora graph engine", None, None)
+            .unwrap();
+
+        hora.delete_entity(id).unwrap();
+
+        let results = hora.text_search("hora", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_text_search_respects_update() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora
+            .add_entity("project", "old name cats", None, None)
+            .unwrap();
+
+        hora.update_entity(
+            id,
+            EntityUpdate {
+                name: Some("new name dogs".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(hora.text_search("cats", 10).unwrap().is_empty());
+        assert_eq!(hora.text_search("dogs", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_text_search_after_persistence_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bm25.hora");
+
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            hora.add_entity("project", "hora graph engine", None, None)
+                .unwrap();
+            hora.add_entity("language", "rust programming", None, None)
+                .unwrap();
+            hora.flush().unwrap();
+        }
+
+        // Reopen → BM25 index rebuilt from entities
+        {
+            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let results = hora.text_search("hora", 10).unwrap();
+            assert_eq!(results.len(), 1);
+
+            let results = hora.text_search("rust", 10).unwrap();
+            assert_eq!(results.len(), 1);
         }
     }
 }
