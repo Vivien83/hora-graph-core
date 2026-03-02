@@ -21,3 +21,7 @@ harness = false
 [[bench]]
 name = "traversal"
 harness = false
+
+[[bench]]
+name = "vector_search"
+harness = false

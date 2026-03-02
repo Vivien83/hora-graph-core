@@ -1,5 +1,6 @@
 pub mod core;
 pub mod error;
+pub mod search;
 pub mod storage;
 
 pub use crate::core::edge::Edge;
@@ -10,6 +11,7 @@ pub use crate::core::types::{
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
+pub use crate::search::vector::SearchHit;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -445,6 +447,37 @@ impl HoraCore {
             .filter(|e| e.valid_at <= t && (e.invalid_at == 0 || e.invalid_at > t))
             .collect();
         Ok(valid)
+    }
+
+    // --- Vector Search ---
+
+    /// Brute-force vector search: find the `k` most similar entities by cosine similarity.
+    ///
+    /// Requires `embedding_dims > 0` in the config. Entities without embeddings
+    /// are silently skipped. The query embedding must match `embedding_dims` in length.
+    pub fn vector_search(&self, query: &[f32], k: usize) -> Result<Vec<SearchHit>> {
+        if self.config.embedding_dims == 0 {
+            return Err(HoraError::DimensionMismatch {
+                expected: 0,
+                got: query.len(),
+            });
+        }
+        if query.len() != self.config.embedding_dims as usize {
+            return Err(HoraError::DimensionMismatch {
+                expected: self.config.embedding_dims as usize,
+                got: query.len(),
+            });
+        }
+
+        let entities = self.storage.scan_all_entities()?;
+
+        // Collect (id, embedding_slice) pairs, skip entities without embeddings
+        let with_embeddings: Vec<(EntityId, &[f32])> = entities
+            .iter()
+            .filter_map(|e| e.embedding.as_ref().map(|emb| (e.id, emb.as_slice())))
+            .collect();
+
+        Ok(search::vector::top_k_brute_force(query, &with_embeddings, k))
     }
 
     // --- Episodes ---
@@ -1179,6 +1212,117 @@ mod tests {
                 e.properties.get("active"),
                 Some(&PropertyValue::Bool(true))
             );
+        }
+    }
+
+    // --- v0.2a tests: Vector Search ---
+
+    #[test]
+    fn test_vector_search_basic() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        // Entity close to query
+        hora.add_entity("a", "close", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+        // Entity far from query
+        hora.add_entity("b", "far", None, Some(&[0.0, 1.0, 0.0]))
+            .unwrap();
+        // Entity very close to query
+        hora.add_entity("c", "very_close", None, Some(&[0.9, 0.1, 0.0]))
+            .unwrap();
+
+        let results = hora.vector_search(&[1.0, 0.0, 0.0], 2).unwrap();
+
+        assert_eq!(results.len(), 2);
+        // First result should be the exact match
+        assert_eq!(results[0].entity_id, EntityId(1));
+        // Second should be the close one
+        assert_eq!(results[1].entity_id, EntityId(3));
+    }
+
+    #[test]
+    fn test_vector_search_returns_exact_k() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        for i in 0..20 {
+            let emb = vec![i as f32, 0.0, 1.0];
+            hora.add_entity("node", &format!("n{}", i), None, Some(&emb))
+                .unwrap();
+        }
+
+        let results = hora.vector_search(&[10.0, 0.0, 1.0], 5).unwrap();
+        assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_vector_search_skips_no_embedding() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        // One with embedding, one without
+        hora.add_entity("a", "with_emb", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+        hora.add_entity("b", "no_emb", None, None).unwrap();
+
+        let results = hora.vector_search(&[1.0, 0.0, 0.0], 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_vector_search_dims_mismatch() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let hora = HoraCore::new(config).unwrap();
+
+        // Query with wrong dimensions
+        let result = hora.vector_search(&[1.0, 0.0], 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vector_search_dims_zero_errors() {
+        let hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let result = hora.vector_search(&[1.0, 0.0, 0.0], 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vector_search_empty_graph() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let hora = HoraCore::new(config).unwrap();
+
+        let results = hora.vector_search(&[1.0, 0.0, 0.0], 10).unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_vector_search_k_larger_than_corpus() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        hora.add_entity("a", "x", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+
+        let results = hora.vector_search(&[1.0, 0.0, 0.0], 100).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_vector_search_scores_descending() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        hora.add_entity("a", "x", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+        hora.add_entity("b", "y", None, Some(&[0.5, 0.5, 0.0]))
+            .unwrap();
+        hora.add_entity("c", "z", None, Some(&[0.0, 1.0, 0.0]))
+            .unwrap();
+
+        let results = hora.vector_search(&[1.0, 0.0, 0.0], 3).unwrap();
+        for w in results.windows(2) {
+            assert!(w[0].score >= w[1].score);
         }
     }
 }
