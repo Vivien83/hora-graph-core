@@ -7,8 +7,8 @@ use napi_derive::napi;
 
 use hora_graph_core::{
     Edge, EdgeId, EntityId, EntityUpdate as CoreEntityUpdate, EpisodeSource,
-    FactUpdate as CoreFactUpdate, HoraConfig, HoraCore as CoreHoraCore, Properties, PropertyValue,
-    SpreadingParams as CoreSpreadingParams, TraverseOpts as CoreTraverseOpts,
+    FactUpdate as CoreFactUpdate, HoraConfig, HoraCore as CoreHoraCore, MemoryPhase, Properties,
+    PropertyValue, SpreadingParams as CoreSpreadingParams, TraverseOpts as CoreTraverseOpts,
 };
 
 // ── Error conversion macro ─────────────────────────────────
@@ -348,6 +348,29 @@ impl JsHoraCore {
                 activation,
             })
             .collect())
+    }
+
+    // ── Reconsolidation ──────────────────────────────────────
+
+    /// Get the current reconsolidation phase for an entity.
+    /// Returns "stable", "labile", or "restabilizing". Null if entity doesn't exist.
+    #[napi]
+    pub fn get_memory_phase(&mut self, entity_id: u32) -> Result<Option<String>> {
+        let phase = h!(Ok(self.inner.get_memory_phase(EntityId(entity_id as u64))))?;
+        Ok(phase.map(|p| match p {
+            MemoryPhase::Stable => "stable".to_string(),
+            MemoryPhase::Labile { .. } => "labile".to_string(),
+            MemoryPhase::Restabilizing { .. } => "restabilizing".to_string(),
+        }))
+    }
+
+    /// Get the cumulative stability multiplier for an entity.
+    /// Starts at 1.0, grows with each reconsolidation cycle.
+    #[napi]
+    pub fn get_stability_multiplier(&mut self, entity_id: u32) -> Result<Option<f64>> {
+        Ok(self
+            .inner
+            .get_stability_multiplier(EntityId(entity_id as u64)))
     }
 
     // ── Episodes ───────────────────────────────────────────

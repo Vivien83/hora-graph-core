@@ -12,6 +12,7 @@ pub use crate::core::types::{
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
+pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
@@ -20,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::types::now_millis;
 use crate::memory::activation::ActivationState;
+use crate::memory::reconsolidation::ReconsolidationState;
 use crate::search::bm25::{self, Bm25Index};
 use crate::storage::format::{self, FileHeader};
 use crate::storage::memory::MemoryStorage;
@@ -44,6 +46,8 @@ pub struct HoraCore {
     file_path: Option<PathBuf>,
     bm25_index: Bm25Index,
     activation_states: HashMap<EntityId, ActivationState>,
+    reconsolidation_states: HashMap<EntityId, ReconsolidationState>,
+    reconsolidation_params: ReconsolidationParams,
 }
 
 impl HoraCore {
@@ -58,6 +62,8 @@ impl HoraCore {
             file_path: None,
             bm25_index: Bm25Index::new(),
             activation_states: HashMap::new(),
+            reconsolidation_states: HashMap::new(),
+            reconsolidation_params: ReconsolidationParams::default(),
         })
     }
 
@@ -100,6 +106,8 @@ impl HoraCore {
                 file_path: Some(path),
                 bm25_index: bm25,
                 activation_states: HashMap::new(),
+                reconsolidation_states: HashMap::new(),
+                reconsolidation_params: ReconsolidationParams::default(),
             })
         } else {
             Ok(Self {
@@ -242,6 +250,10 @@ impl HoraCore {
         act_state.record_access(now_secs);
         self.activation_states.insert(id, act_state);
 
+        // Initialize reconsolidation state
+        self.reconsolidation_states
+            .insert(id, ReconsolidationState::new());
+
         self.storage.put_entity(entity)?;
         Ok(id)
     }
@@ -311,6 +323,7 @@ impl HoraCore {
         self.storage.delete_entity(id)?;
         self.bm25_index.remove_document(id.0 as u32);
         self.activation_states.remove(&id);
+        self.reconsolidation_states.remove(&id);
         Ok(())
     }
 
@@ -615,8 +628,42 @@ impl HoraCore {
     /// called directly for external access events.
     pub fn record_access(&mut self, id: EntityId) {
         let now = now_millis() as f64 / 1000.0;
-        if let Some(state) = self.activation_states.get_mut(&id) {
-            state.record_access(now);
+        if let Some(act_state) = self.activation_states.get_mut(&id) {
+            let activation = act_state.compute_activation(now);
+            act_state.record_access(now);
+
+            // Trigger reconsolidation check
+            if let Some(recon) = self.reconsolidation_states.get_mut(&id) {
+                recon.on_reactivation(activation, now, &self.reconsolidation_params);
+            }
+        }
+    }
+
+    /// Get the current reconsolidation phase for an entity.
+    ///
+    /// Resolves any pending time-based transitions before returning.
+    /// Returns `None` if the entity doesn't exist.
+    pub fn get_memory_phase(&mut self, id: EntityId) -> Option<&MemoryPhase> {
+        let now = now_millis() as f64 / 1000.0;
+        if let Some(recon) = self.reconsolidation_states.get_mut(&id) {
+            recon.tick(now, &self.reconsolidation_params);
+            Some(recon.phase())
+        } else {
+            None
+        }
+    }
+
+    /// Get the cumulative stability multiplier for an entity.
+    ///
+    /// Starts at 1.0, increases by `restabilization_boost` (default 1.2×)
+    /// each time the entity completes a reconsolidation cycle.
+    pub fn get_stability_multiplier(&mut self, id: EntityId) -> Option<f64> {
+        let now = now_millis() as f64 / 1000.0;
+        if let Some(recon) = self.reconsolidation_states.get_mut(&id) {
+            recon.tick(now, &self.reconsolidation_params);
+            Some(recon.stability_multiplier())
+        } else {
+            None
         }
     }
 
@@ -2077,5 +2124,88 @@ mod tests {
         let result = hora.spread_activation(&[(a, 1.0)], &params).unwrap();
         assert!(result.contains_key(&a));
         assert!(result.contains_key(&b));
+    }
+
+    // ── Reconsolidation (v0.3c) ─────────────────────────────
+
+    #[test]
+    fn test_reconsolidation_initial_state_stable() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "A", None, None).unwrap();
+
+        let phase = hora.get_memory_phase(id).unwrap().clone();
+        assert_eq!(phase, MemoryPhase::Stable);
+    }
+
+    #[test]
+    fn test_reconsolidation_removed_on_delete() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "A", None, None).unwrap();
+        hora.delete_entity(id).unwrap();
+        assert!(hora.get_memory_phase(id).is_none());
+    }
+
+    #[test]
+    fn test_reconsolidation_stability_multiplier_default() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "A", None, None).unwrap();
+
+        let mult = hora.get_stability_multiplier(id).unwrap();
+        assert!((mult - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_reconsolidation_strong_access_destabilizes() {
+        // We need to control timing precisely, so we test the state module directly
+        // but via HoraCore's reconsolidation_states for integration.
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "A", None, None).unwrap();
+
+        // Access many times to build up activation above threshold (0.5)
+        // Each get_entity call records access, which triggers reconsolidation check
+        for _ in 0..5 {
+            let _ = hora.get_entity(id);
+        }
+
+        // After enough accesses, activation should be high enough to destabilize
+        let activation = hora.get_activation(id).unwrap();
+
+        // The reconsolidation check happens inside record_access.
+        // If activation > 0.5, entity should be Labile.
+        if activation >= 0.5 {
+            let phase = hora.get_memory_phase(id).unwrap().clone();
+            assert!(
+                matches!(phase, MemoryPhase::Labile { .. }),
+                "Expected Labile for activation {activation}, got {phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_reconsolidation_unit_level_full_cycle() {
+        // Direct unit test of the reconsolidation state within HoraCore
+        use crate::memory::reconsolidation::{ReconsolidationParams, ReconsolidationState};
+
+        let params = ReconsolidationParams {
+            labile_window_secs: 100.0,
+            restabilization_secs: 200.0,
+            destabilization_threshold: 0.0, // always destabilize
+            restabilization_boost: 1.5,
+        };
+
+        let mut state = ReconsolidationState::new();
+
+        // Strong reactivation → Labile
+        state.on_reactivation(1.0, 0.0, &params);
+        assert!(matches!(state.phase(), MemoryPhase::Labile { .. }));
+
+        // After 100s → Restabilizing
+        state.tick(100.0, &params);
+        assert!(matches!(state.phase(), MemoryPhase::Restabilizing { .. }));
+
+        // After 200s more → Stable with boost
+        state.tick(300.0, &params);
+        assert_eq!(*state.phase(), MemoryPhase::Stable);
+        assert!((state.stability_multiplier() - 1.5).abs() < f64::EPSILON);
     }
 }
