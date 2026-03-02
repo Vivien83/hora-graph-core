@@ -1,6 +1,38 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Node bindings
 node_modules/
+bindings/node/*.node
+bindings/node/dist/
+
+# Python bindings
+__pycache__/
+*.egg-info/
+.venv/
 dist/
+
+# WASM
+bindings/wasm/pkg/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
 .env
 .env.local
-.DS_Store
+
+# Logs
 *.log
+
+# HORA
+.hora/snapshots/
