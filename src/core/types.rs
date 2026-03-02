@@ -131,11 +131,47 @@ pub enum EpisodeSource {
     Api,
 }
 
+/// Configuration for entity deduplication.
+#[derive(Debug, Clone)]
+pub struct DedupConfig {
+    /// Enable deduplication on add_entity.
+    pub enabled: bool,
+    /// Detect exact name match after normalisation (lowercase, trim, collapse separators).
+    pub name_exact: bool,
+    /// Jaccard token overlap threshold (0.0–1.0). 0.0 = disabled.
+    pub jaccard_threshold: f32,
+    /// Cosine embedding similarity threshold (0.0–1.0). 0.0 = disabled.
+    pub cosine_threshold: f32,
+}
+
+impl Default for DedupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name_exact: true,
+            jaccard_threshold: 0.85,
+            cosine_threshold: 0.92,
+        }
+    }
+}
+
+impl DedupConfig {
+    /// Create a config with deduplication disabled.
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Default::default()
+        }
+    }
+}
+
 /// Configuration for a HoraCore instance.
 #[derive(Debug, Clone, Default)]
 pub struct HoraConfig {
     /// Embedding vector dimensions. 0 = no vector search (text-only mode).
     pub embedding_dims: u16,
+    /// Deduplication settings. Active by default.
+    pub dedup: DedupConfig,
 }
 
 /// Summary statistics for the knowledge graph.

@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use hora_graph_core::search::vector::{cosine_scalar, cosine_similarity};
-use hora_graph_core::{HoraConfig, HoraCore};
+use hora_graph_core::{DedupConfig, HoraConfig, HoraCore};
 
 // ── Zero-dep LCG RNG (reproducible, seed=42) ─────────────────────
 struct SimpleRng(u64);
@@ -69,6 +69,7 @@ fn bench_vector_search(c: &mut Criterion) {
         // Build graph with n entities, each with a 384-dim embedding
         let config = HoraConfig {
             embedding_dims: dim,
+            dedup: DedupConfig::disabled(),
         };
         let mut hora = HoraCore::new(config).unwrap();
 

@@ -1,5 +1,9 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use hora_graph_core::{HoraConfig, HoraCore};
+use hora_graph_core::{DedupConfig, HoraConfig, HoraCore};
+
+fn bench_config() -> HoraConfig {
+    HoraConfig { dedup: DedupConfig::disabled(), ..Default::default() }
+}
 
 // ── Zero-dep LCG RNG ─────────────────────────────────────────────
 struct SimpleRng(u64);
@@ -35,7 +39,7 @@ fn random_text(rng: &mut SimpleRng, word_count: usize) -> String {
 }
 
 fn build_graph(n: usize) -> HoraCore {
-    let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+    let mut hora = HoraCore::new(bench_config()).unwrap();
     let mut rng = SimpleRng::new(42);
 
     for i in 0..n {
@@ -79,7 +83,7 @@ fn bench_bm25_index(c: &mut Criterion) {
 
     // Measure indexing speed: add_entity with text
     group.bench_function("add_entity_with_text", |b| {
-        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let mut hora = HoraCore::new(bench_config()).unwrap();
         let mut rng = SimpleRng::new(42);
         let mut i = 0u64;
 

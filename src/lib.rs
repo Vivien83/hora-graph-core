@@ -7,7 +7,7 @@ pub use crate::core::edge::Edge;
 pub use crate::core::entity::Entity;
 pub use crate::core::episode::Episode;
 pub use crate::core::types::{
-    EdgeId, EntityId, EntityUpdate, EpisodeSource, FactUpdate, HoraConfig, Properties,
+    DedupConfig, EdgeId, EntityId, EntityUpdate, EpisodeSource, FactUpdate, HoraConfig, Properties,
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
@@ -86,6 +86,7 @@ impl HoraCore {
             Ok(Self {
                 config: HoraConfig {
                     embedding_dims: graph.header.embedding_dims,
+                    ..Default::default()
                 },
                 storage: Box::new(storage),
                 next_entity_id: graph.header.next_entity_id,
@@ -172,7 +173,10 @@ impl HoraCore {
 
     /// Add a new entity to the knowledge graph.
     ///
-    /// Returns the ID of the newly created entity.
+    /// If deduplication is enabled and a duplicate is detected among entities
+    /// of the same type, returns the existing entity's ID instead of creating
+    /// a new one. Detection uses: normalized name exact match, cosine embedding
+    /// similarity, and Jaccard token overlap (in that priority order).
     pub fn add_entity(
         &mut self,
         entity_type: &str,
@@ -193,6 +197,20 @@ impl HoraCore {
                     expected: self.config.embedding_dims as usize,
                     got: emb.len(),
                 });
+            }
+        }
+
+        // Deduplication check
+        if self.config.dedup.enabled {
+            let candidates = self.storage.scan_all_entities()?;
+            if let Some(existing_id) = crate::core::dedup::find_duplicate(
+                name,
+                embedding,
+                entity_type,
+                &candidates,
+                &self.config.dedup,
+            ) {
+                return Ok(existing_id);
             }
         }
 
@@ -665,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_embedding_dimension_mismatch() {
-        let config = HoraConfig { embedding_dims: 4 };
+        let config = HoraConfig { embedding_dims: 4, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
         let wrong_dims = vec![1.0, 2.0]; // 2 instead of 4
         let result = hora.add_entity("a", "x", None, Some(&wrong_dims));
@@ -682,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_embedding_correct_dims() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
         let emb = vec![1.0, 2.0, 3.0];
         let id = hora.add_entity("a", "x", None, Some(&emb)).unwrap();
@@ -1136,7 +1154,7 @@ mod tests {
 
     #[test]
     fn test_persistence_with_embeddings() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.hora");
 
@@ -1291,7 +1309,7 @@ mod tests {
 
     #[test]
     fn test_vector_search_basic() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         // Entity close to query
@@ -1315,7 +1333,7 @@ mod tests {
 
     #[test]
     fn test_vector_search_returns_exact_k() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         for i in 0..20 {
@@ -1330,7 +1348,7 @@ mod tests {
 
     #[test]
     fn test_vector_search_skips_no_embedding() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         // One with embedding, one without
@@ -1344,7 +1362,7 @@ mod tests {
 
     #[test]
     fn test_vector_search_dims_mismatch() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let hora = HoraCore::new(config).unwrap();
 
         // Query with wrong dimensions
@@ -1361,7 +1379,7 @@ mod tests {
 
     #[test]
     fn test_vector_search_empty_graph() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let hora = HoraCore::new(config).unwrap();
 
         let results = hora.vector_search(&[1.0, 0.0, 0.0], 10).unwrap();
@@ -1370,7 +1388,7 @@ mod tests {
 
     #[test]
     fn test_vector_search_k_larger_than_corpus() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "x", None, Some(&[1.0, 0.0, 0.0]))
@@ -1382,7 +1400,7 @@ mod tests {
 
     #[test]
     fn test_vector_search_scores_descending() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "x", None, Some(&[1.0, 0.0, 0.0]))
@@ -1522,7 +1540,7 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_both_legs() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         // Entity 1: strong vector match + text match → should rank highest
@@ -1555,7 +1573,7 @@ mod tests {
     #[test]
     fn test_hybrid_search_text_only_mode() {
         // embedding_dims=0 → vector leg skipped, pure BM25
-        let config = HoraConfig { embedding_dims: 0 };
+        let config = HoraConfig { embedding_dims: 0, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "rust language", None, None).unwrap();
@@ -1575,7 +1593,7 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_vector_only_mode() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "alpha", None, Some(&[1.0, 0.0, 0.0]))
@@ -1598,7 +1616,7 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_neither_leg() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
         hora.add_entity("a", "test", None, Some(&[1.0, 0.0, 0.0]))
             .unwrap();
@@ -1612,7 +1630,7 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_top_k_respected() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         for i in 0..20 {
@@ -1634,7 +1652,7 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_wrong_dims_skips_vector() {
-        let config = HoraConfig { embedding_dims: 3 };
+        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "rust language", None, Some(&[1.0, 0.0, 0.0]))
@@ -1651,5 +1669,141 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id, EntityId(1));
+    }
+
+    // --- v0.2d tests: Deduplication ---
+
+    #[test]
+    fn test_dedup_name_exact_normalization() {
+        // "hora-engine" and "Hora Engine" should be detected as duplicates
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+
+        let id1 = hora.add_entity("project", "Hora Engine", None, None).unwrap();
+        let id2 = hora.add_entity("project", "hora-engine", None, None).unwrap();
+
+        // Should return the existing entity's ID
+        assert_eq!(id1, id2);
+        // Only 1 entity should exist
+        assert_eq!(hora.stats().unwrap().entities, 1);
+    }
+
+    #[test]
+    fn test_dedup_name_case_insensitive() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+
+        let id1 = hora.add_entity("project", "Rust", None, None).unwrap();
+        let id2 = hora.add_entity("project", "rust", None, None).unwrap();
+        let id3 = hora.add_entity("project", "RUST", None, None).unwrap();
+
+        assert_eq!(id1, id2);
+        assert_eq!(id1, id3);
+        assert_eq!(hora.stats().unwrap().entities, 1);
+    }
+
+    #[test]
+    fn test_dedup_different_type_allows_same_name() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+
+        let id1 = hora.add_entity("project", "rust", None, None).unwrap();
+        let id2 = hora.add_entity("language", "rust", None, None).unwrap();
+
+        // Different types → not a duplicate
+        assert_ne!(id1, id2);
+        assert_eq!(hora.stats().unwrap().entities, 2);
+    }
+
+    #[test]
+    fn test_dedup_cosine_embedding() {
+        let config = HoraConfig { embedding_dims: 3, ..Default::default() };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        let emb1 = [1.0, 0.0, 0.0];
+        let emb2 = [0.99, 0.1, 0.0]; // very similar (cosine > 0.99)
+
+        let id1 = hora
+            .add_entity("concept", "alpha", None, Some(&emb1))
+            .unwrap();
+        let id2 = hora
+            .add_entity("concept", "beta", None, Some(&emb2))
+            .unwrap();
+
+        // Different names but similar embeddings → duplicate
+        assert_eq!(id1, id2);
+        assert_eq!(hora.stats().unwrap().entities, 1);
+    }
+
+    #[test]
+    fn test_dedup_cosine_below_threshold() {
+        let config = HoraConfig { embedding_dims: 3, ..Default::default() };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        let emb1 = [1.0, 0.0, 0.0];
+        let emb2 = [0.0, 1.0, 0.0]; // orthogonal → cosine = 0
+
+        let id1 = hora
+            .add_entity("concept", "alpha", None, Some(&emb1))
+            .unwrap();
+        let id2 = hora
+            .add_entity("concept", "beta", None, Some(&emb2))
+            .unwrap();
+
+        // Very different embeddings → not a duplicate
+        assert_ne!(id1, id2);
+        assert_eq!(hora.stats().unwrap().entities, 2);
+    }
+
+    #[test]
+    fn test_dedup_disabled() {
+        let config = HoraConfig {
+            dedup: DedupConfig::disabled(),
+            ..Default::default()
+        };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        let id1 = hora.add_entity("project", "rust", None, None).unwrap();
+        let id2 = hora.add_entity("project", "rust", None, None).unwrap();
+
+        // Dedup disabled → both created
+        assert_ne!(id1, id2);
+        assert_eq!(hora.stats().unwrap().entities, 2);
+    }
+
+    #[test]
+    fn test_dedup_no_id_increment_on_duplicate() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+
+        let id1 = hora.add_entity("project", "hora", None, None).unwrap();
+        let _id2 = hora.add_entity("project", "hora", None, None).unwrap(); // dedup → returns id1
+
+        // Next unique entity should get id=2, not id=3
+        let id3 = hora.add_entity("language", "rust", None, None).unwrap();
+        assert_eq!(id1, EntityId(1));
+        assert_eq!(id3, EntityId(2));
+    }
+
+    #[test]
+    fn test_dedup_configurable_thresholds() {
+        // Lower Jaccard threshold → easier to dedup
+        let config = HoraConfig {
+            dedup: DedupConfig {
+                enabled: true,
+                name_exact: false, // disable exact name to test Jaccard only
+                jaccard_threshold: 0.5,
+                cosine_threshold: 0.0,
+            },
+            ..Default::default()
+        };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        // "rust graph engine" tokens: [rust, graph, engine]
+        let id1 = hora
+            .add_entity("project", "rust graph engine", None, None)
+            .unwrap();
+        // "rust graph database" tokens: [rust, graph, database] → Jaccard 2/4 = 0.5 >= 0.5
+        let id2 = hora
+            .add_entity("project", "rust graph database", None, None)
+            .unwrap();
+
+        assert_eq!(id1, id2);
     }
 }

@@ -1,5 +1,9 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use hora_graph_core::{EntityId, HoraConfig, HoraCore};
+use hora_graph_core::{DedupConfig, EntityId, HoraConfig, HoraCore};
+
+fn bench_config() -> HoraConfig {
+    HoraConfig { dedup: DedupConfig::disabled(), ..Default::default() }
+}
 
 // ── Zero-dep LCG RNG (reproducible, seed=42) ─────────────────────
 struct SimpleRng(u64);
@@ -24,7 +28,7 @@ impl SimpleRng {
 
 fn bench_add_entity(c: &mut Criterion) {
     c.bench_function("add_entity", |b| {
-        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let mut hora = HoraCore::new(bench_config()).unwrap();
         b.iter(|| {
             hora.add_entity("test", "entity", None, None).unwrap();
         });
@@ -32,7 +36,7 @@ fn bench_add_entity(c: &mut Criterion) {
 }
 
 fn bench_get_entity(c: &mut Criterion) {
-    let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+    let mut hora = HoraCore::new(bench_config()).unwrap();
     let ids: Vec<EntityId> = (0..10_000)
         .map(|i| {
             hora.add_entity("test", &format!("e{}", i), None, None)
@@ -52,7 +56,7 @@ fn bench_get_entity(c: &mut Criterion) {
 
 fn bench_add_fact(c: &mut Criterion) {
     c.bench_function("add_fact", |b| {
-        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let mut hora = HoraCore::new(bench_config()).unwrap();
         let mut rng = SimpleRng::new(42);
 
         // Pre-create entities so add_fact doesn't fail on missing entities
@@ -82,7 +86,7 @@ fn bench_batch_insert(c: &mut Criterion) {
             &(n_entities, n_edges),
             |b, &(n_ent, n_edg)| {
                 b.iter(|| {
-                    let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+                    let mut hora = HoraCore::new(bench_config()).unwrap();
                     let mut rng = SimpleRng::new(42);
 
                     let ids: Vec<EntityId> = (0..n_ent)
@@ -112,7 +116,7 @@ fn bench_persistence_roundtrip(c: &mut Criterion) {
     group.sample_size(10);
 
     // Build a graph with 10K entities + 50K edges, then bench flush+open
-    let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+    let mut hora = HoraCore::new(bench_config()).unwrap();
     let mut rng = SimpleRng::new(42);
 
     let ids: Vec<EntityId> = (0..10_000)
@@ -134,14 +138,14 @@ fn bench_persistence_roundtrip(c: &mut Criterion) {
     let path = dir.path().join("bench.hora");
 
     // Bench: flush (serialize to disk)
-    let file_hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+    let file_hora = HoraCore::open(&path, bench_config()).unwrap();
     // We need a file-backed instance for flush, so snapshot first
     hora.snapshot(&path).unwrap();
 
     group.bench_function("flush_10k", |b| {
         let flush_path = dir.path().join("flush_bench.hora");
         hora.snapshot(&flush_path).unwrap();
-        let flush_hora = HoraCore::open(&flush_path, HoraConfig::default()).unwrap();
+        let flush_hora = HoraCore::open(&flush_path, bench_config()).unwrap();
         b.iter(|| {
             flush_hora.flush().unwrap();
         });
@@ -150,7 +154,7 @@ fn bench_persistence_roundtrip(c: &mut Criterion) {
     // Bench: open (deserialize from disk)
     group.bench_function("open_10k", |b| {
         b.iter(|| {
-            let _ = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let _ = HoraCore::open(&path, bench_config()).unwrap();
         });
     });
 

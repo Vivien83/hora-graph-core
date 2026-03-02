@@ -1,5 +1,9 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use hora_graph_core::{EntityId, HoraConfig, HoraCore, TraverseOpts};
+use hora_graph_core::{DedupConfig, EntityId, HoraConfig, HoraCore, TraverseOpts};
+
+fn bench_config() -> HoraConfig {
+    HoraConfig { dedup: DedupConfig::disabled(), ..Default::default() }
+}
 
 // ── Zero-dep LCG RNG (reproducible, seed=42) ─────────────────────
 struct SimpleRng(u64);
@@ -22,7 +26,7 @@ impl SimpleRng {
 
 /// Build a random graph for benchmark use.
 fn setup_random_graph(n_entities: usize, n_edges: usize) -> (HoraCore, Vec<EntityId>) {
-    let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+    let mut hora = HoraCore::new(bench_config()).unwrap();
     let mut rng = SimpleRng::new(42);
 
     let ids: Vec<EntityId> = (0..n_entities)
@@ -71,7 +75,7 @@ fn bench_bfs(c: &mut Criterion) {
 
 fn bench_timeline(c: &mut Criterion) {
     // Single entity connected to 100 facts
-    let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+    let mut hora = HoraCore::new(bench_config()).unwrap();
     let hub = hora.add_entity("hub", "central", None, None).unwrap();
 
     for i in 0..100 {

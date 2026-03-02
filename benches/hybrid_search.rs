@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use hora_graph_core::{HoraConfig, HoraCore, SearchOpts};
+use hora_graph_core::{DedupConfig, HoraConfig, HoraCore, SearchOpts};
 
 // ── Zero-dep LCG RNG ─────────────────────────────────────────────
 struct SimpleRng(u64);
@@ -49,7 +49,7 @@ fn random_embedding(rng: &mut SimpleRng, dims: usize) -> Vec<f32> {
 const DIMS: usize = 128;
 
 fn build_hybrid_graph(n: usize) -> HoraCore {
-    let config = HoraConfig { embedding_dims: DIMS as u16 };
+    let config = HoraConfig { embedding_dims: DIMS as u16, dedup: DedupConfig::disabled() };
     let mut hora = HoraCore::new(config).unwrap();
     let mut rng = SimpleRng::new(42);
 

@@ -121,6 +121,7 @@ fn edge_to_js(e: Edge) -> JsFact {
 fn make_config(config: Option<JsHoraConfig>) -> HoraConfig {
     HoraConfig {
         embedding_dims: config.and_then(|c| c.embedding_dims).unwrap_or(0) as u16,
+        ..Default::default()
     }
 }
 
