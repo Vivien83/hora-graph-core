@@ -29,3 +29,7 @@ harness = false
 [[bench]]
 name = "bm25"
 harness = false
+
+[[bench]]
+name = "hybrid_search"
+harness = false

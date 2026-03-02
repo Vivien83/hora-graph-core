@@ -11,7 +11,7 @@ pub use crate::core::types::{
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
-pub use crate::search::SearchHit;
+pub use crate::search::{SearchHit, SearchOpts};
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -504,6 +504,52 @@ impl HoraCore {
     /// are invisible to BM25.
     pub fn text_search(&mut self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
         Ok(self.bm25_index.search(query, k))
+    }
+
+    // --- Hybrid Search ---
+
+    /// Hybrid search combining vector similarity and BM25 full-text via RRF fusion.
+    ///
+    /// Provide `query_text` for BM25, `query_embedding` for vector search, or both.
+    /// When both are provided, results are fused using Reciprocal Rank Fusion.
+    /// When only one is provided, that leg runs alone.
+    /// Returns empty if neither is provided.
+    pub fn search(
+        &mut self,
+        query_text: Option<&str>,
+        query_embedding: Option<&[f32]>,
+        opts: SearchOpts,
+    ) -> Result<Vec<SearchHit>> {
+        let candidate_k = opts.top_k * 3;
+
+        // Vector leg (skip if embedding_dims=0 or no embedding provided)
+        let vec_results = if let Some(emb) = query_embedding {
+            if self.config.embedding_dims > 0 && emb.len() == self.config.embedding_dims as usize {
+                Some(self.vector_search(emb, candidate_k)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // BM25 leg
+        let bm25_results = if let Some(text) = query_text {
+            let results = self.bm25_index.search(text, candidate_k);
+            if results.is_empty() {
+                None
+            } else {
+                Some(results)
+            }
+        } else {
+            None
+        };
+
+        Ok(search::hybrid::rrf_fuse(
+            vec_results.as_deref(),
+            bm25_results.as_deref(),
+            opts.top_k,
+        ))
     }
 
     // --- Episodes ---
@@ -1470,5 +1516,140 @@ mod tests {
             let results = hora.text_search("rust", 10).unwrap();
             assert_eq!(results.len(), 1);
         }
+    }
+
+    // --- v0.2c tests: Hybrid Search (RRF) ---
+
+    #[test]
+    fn test_hybrid_search_both_legs() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        // Entity 1: strong vector match + text match → should rank highest
+        hora.add_entity("a", "rust language", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+        // Entity 2: text match only
+        hora.add_entity("b", "rust compiler", None, Some(&[0.0, 1.0, 0.0]))
+            .unwrap();
+        // Entity 3: vector match only (no "rust" in name)
+        hora.add_entity("c", "speed daemon", None, Some(&[0.9, 0.1, 0.0]))
+            .unwrap();
+
+        let results = hora
+            .search(
+                Some("rust"),
+                Some(&[1.0, 0.0, 0.0]),
+                SearchOpts { top_k: 10, ..Default::default() },
+            )
+            .unwrap();
+
+        // Entity 1 found by both legs → should be first
+        assert_eq!(results[0].entity_id, EntityId(1));
+        assert!(results.len() >= 2);
+        // Scores descending
+        for w in results.windows(2) {
+            assert!(w[0].score >= w[1].score);
+        }
+    }
+
+    #[test]
+    fn test_hybrid_search_text_only_mode() {
+        // embedding_dims=0 → vector leg skipped, pure BM25
+        let config = HoraConfig { embedding_dims: 0 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        hora.add_entity("a", "rust language", None, None).unwrap();
+        hora.add_entity("b", "python language", None, None).unwrap();
+
+        let results = hora
+            .search(
+                Some("rust"),
+                None,
+                SearchOpts::default(),
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entity_id, EntityId(1));
+    }
+
+    #[test]
+    fn test_hybrid_search_vector_only_mode() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        hora.add_entity("a", "alpha", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+        hora.add_entity("b", "beta", None, Some(&[0.0, 1.0, 0.0]))
+            .unwrap();
+
+        // No text query → vector leg only
+        let results = hora
+            .search(
+                None,
+                Some(&[1.0, 0.0, 0.0]),
+                SearchOpts::default(),
+            )
+            .unwrap();
+
+        assert_eq!(results[0].entity_id, EntityId(1));
+        assert!(results[0].score > results[1].score);
+    }
+
+    #[test]
+    fn test_hybrid_search_neither_leg() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+        hora.add_entity("a", "test", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+
+        let results = hora
+            .search(None, None, SearchOpts::default())
+            .unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_hybrid_search_top_k_respected() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        for i in 0..20 {
+            let emb = [1.0 - i as f32 * 0.01, 0.0, 0.0];
+            hora.add_entity("t", &format!("entity{i}"), None, Some(&emb))
+                .unwrap();
+        }
+
+        let results = hora
+            .search(
+                None,
+                Some(&[1.0, 0.0, 0.0]),
+                SearchOpts { top_k: 5, ..Default::default() },
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_hybrid_search_wrong_dims_skips_vector() {
+        let config = HoraConfig { embedding_dims: 3 };
+        let mut hora = HoraCore::new(config).unwrap();
+
+        hora.add_entity("a", "rust language", None, Some(&[1.0, 0.0, 0.0]))
+            .unwrap();
+
+        // Wrong embedding dims → vector leg skipped, BM25 only
+        let results = hora
+            .search(
+                Some("rust"),
+                Some(&[1.0, 0.0]),
+                SearchOpts::default(),
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].entity_id, EntityId(1));
     }
 }
