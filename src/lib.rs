@@ -1154,7 +1154,7 @@ mod tests {
                 Some(props! {
                     "name" => "hora",
                     "stars" => 42,
-                    "score" => 3.14,
+                    "score" => 2.72,
                     "active" => true
                 }),
                 None,
@@ -1173,7 +1173,7 @@ mod tests {
             assert_eq!(e.properties.get("stars"), Some(&PropertyValue::Int(42)));
             assert_eq!(
                 e.properties.get("score"),
-                Some(&PropertyValue::Float(3.14))
+                Some(&PropertyValue::Float(2.72))
             );
             assert_eq!(
                 e.properties.get("active"),
