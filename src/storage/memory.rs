@@ -43,6 +43,12 @@ impl StorageOps for MemoryStorage {
         Ok(self.entities.get(&id).cloned())
     }
 
+    fn delete_entity(&mut self, id: EntityId) -> Result<bool> {
+        let existed = self.entities.remove(&id).is_some();
+        self.entity_edges.remove(&id);
+        Ok(existed)
+    }
+
     fn put_edge(&mut self, edge: Edge) -> Result<()> {
         let id = edge.id;
         let source = edge.source;
@@ -71,6 +77,32 @@ impl StorageOps for MemoryStorage {
             .filter_map(|id| self.edges.get(id).cloned())
             .collect();
         Ok(edges)
+    }
+
+    fn get_entity_edge_ids(&self, entity_id: EntityId) -> Result<Vec<EdgeId>> {
+        Ok(self
+            .entity_edges
+            .get(&entity_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn delete_edge(&mut self, id: EdgeId) -> Result<bool> {
+        let edge = match self.edges.remove(&id) {
+            Some(e) => e,
+            None => return Ok(false),
+        };
+
+        // Clean up entity_edges index for both sides
+        if let Some(ids) = self.entity_edges.get_mut(&edge.source) {
+            ids.retain(|eid| *eid != id);
+        }
+        if edge.source != edge.target {
+            if let Some(ids) = self.entity_edges.get_mut(&edge.target) {
+                ids.retain(|eid| *eid != id);
+            }
+        }
+        Ok(true)
     }
 
     fn put_episode(&mut self, episode: Episode) -> Result<()> {

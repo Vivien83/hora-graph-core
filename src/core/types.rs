@@ -30,8 +30,76 @@ pub enum PropertyValue {
     Bool(bool),
 }
 
+impl From<&str> for PropertyValue {
+    fn from(s: &str) -> Self {
+        Self::String(s.to_string())
+    }
+}
+
+impl From<std::string::String> for PropertyValue {
+    fn from(s: std::string::String) -> Self {
+        Self::String(s)
+    }
+}
+
+impl From<i64> for PropertyValue {
+    fn from(v: i64) -> Self {
+        Self::Int(v)
+    }
+}
+
+impl From<i32> for PropertyValue {
+    fn from(v: i32) -> Self {
+        Self::Int(v as i64)
+    }
+}
+
+impl From<f64> for PropertyValue {
+    fn from(v: f64) -> Self {
+        Self::Float(v)
+    }
+}
+
+impl From<bool> for PropertyValue {
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
+}
+
 /// Convenience type alias for entity properties.
 pub type Properties = HashMap<std::string::String, PropertyValue>;
+
+/// Convenience macro for building property maps.
+///
+/// ```
+/// use hora_graph_core::{props, PropertyValue};
+/// let p = props! { "language" => "Rust", "stars" => 42 };
+/// assert_eq!(p.get("language"), Some(&PropertyValue::String("Rust".into())));
+/// ```
+#[macro_export]
+macro_rules! props {
+    ($($key:expr => $val:expr),* $(,)?) => {{
+        let mut map = $crate::Properties::new();
+        $(map.insert($key.to_string(), $crate::PropertyValue::from($val));)*
+        map
+    }};
+}
+
+/// Partial update for an entity. Only `Some` fields are applied.
+#[derive(Debug, Clone, Default)]
+pub struct EntityUpdate {
+    pub name: Option<std::string::String>,
+    pub entity_type: Option<std::string::String>,
+    pub properties: Option<Properties>,
+    pub embedding: Option<Vec<f32>>,
+}
+
+/// Partial update for a fact. Only `Some` fields are applied.
+#[derive(Debug, Clone, Default)]
+pub struct FactUpdate {
+    pub confidence: Option<f32>,
+    pub description: Option<std::string::String>,
+}
 
 /// Source of an episode.
 #[derive(Debug, Clone, PartialEq, Eq)]

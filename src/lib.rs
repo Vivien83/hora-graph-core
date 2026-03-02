@@ -6,7 +6,8 @@ pub use crate::core::edge::Edge;
 pub use crate::core::entity::Entity;
 pub use crate::core::episode::Episode;
 pub use crate::core::types::{
-    EdgeId, EntityId, EpisodeSource, HoraConfig, Properties, PropertyValue, StorageStats,
+    EdgeId, EntityId, EntityUpdate, EpisodeSource, FactUpdate, HoraConfig, Properties,
+    PropertyValue, StorageStats,
 };
 pub use crate::error::{HoraError, Result};
 
@@ -93,6 +94,57 @@ impl HoraCore {
         self.storage.get_entity(id)
     }
 
+    /// Update an entity. Only fields set to `Some` in the update are changed.
+    pub fn update_entity(&mut self, id: EntityId, update: EntityUpdate) -> Result<()> {
+        let mut entity = self
+            .storage
+            .get_entity(id)?
+            .ok_or(HoraError::EntityNotFound(id.0))?;
+
+        if let Some(name) = update.name {
+            entity.name = name;
+        }
+        if let Some(entity_type) = update.entity_type {
+            entity.entity_type = entity_type;
+        }
+        if let Some(properties) = update.properties {
+            entity.properties = properties;
+        }
+        if let Some(embedding) = update.embedding {
+            if self.config.embedding_dims == 0 {
+                return Err(HoraError::DimensionMismatch {
+                    expected: 0,
+                    got: embedding.len(),
+                });
+            }
+            if embedding.len() != self.config.embedding_dims as usize {
+                return Err(HoraError::DimensionMismatch {
+                    expected: self.config.embedding_dims as usize,
+                    got: embedding.len(),
+                });
+            }
+            entity.embedding = Some(embedding);
+        }
+
+        self.storage.put_entity(entity)
+    }
+
+    /// Delete an entity and all its associated edges (cascade).
+    pub fn delete_entity(&mut self, id: EntityId) -> Result<()> {
+        if self.storage.get_entity(id)?.is_none() {
+            return Err(HoraError::EntityNotFound(id.0));
+        }
+
+        // Cascade: delete all edges connected to this entity
+        let edge_ids = self.storage.get_entity_edge_ids(id)?;
+        for edge_id in edge_ids {
+            self.storage.delete_edge(edge_id)?;
+        }
+
+        self.storage.delete_entity(id)?;
+        Ok(())
+    }
+
     // --- CRUD Facts (edges) ---
 
     /// Add a new fact (directed edge) between two entities.
@@ -138,6 +190,47 @@ impl HoraCore {
     /// Get a fact by ID. Returns `None` if not found.
     pub fn get_fact(&self, id: EdgeId) -> Result<Option<Edge>> {
         self.storage.get_edge(id)
+    }
+
+    /// Update a fact. Only fields set to `Some` in the update are changed.
+    pub fn update_fact(&mut self, id: EdgeId, update: FactUpdate) -> Result<()> {
+        let mut edge = self
+            .storage
+            .get_edge(id)?
+            .ok_or(HoraError::EdgeNotFound(id.0))?;
+
+        if let Some(confidence) = update.confidence {
+            edge.confidence = confidence;
+        }
+        if let Some(description) = update.description {
+            edge.description = description;
+        }
+
+        self.storage.put_edge(edge)
+    }
+
+    /// Mark a fact as invalid (bi-temporal). The fact is NOT deleted —
+    /// it remains queryable with its validity window.
+    pub fn invalidate_fact(&mut self, id: EdgeId) -> Result<()> {
+        let mut edge = self
+            .storage
+            .get_edge(id)?
+            .ok_or(HoraError::EdgeNotFound(id.0))?;
+
+        if edge.invalid_at != 0 {
+            return Err(HoraError::AlreadyInvalidated(id.0));
+        }
+
+        edge.invalid_at = now_millis();
+        self.storage.put_edge(edge)
+    }
+
+    /// Physically delete a fact. Use `invalidate_fact` for bi-temporal soft-delete.
+    pub fn delete_fact(&mut self, id: EdgeId) -> Result<()> {
+        if !self.storage.delete_edge(id)? {
+            return Err(HoraError::EdgeNotFound(id.0));
+        }
+        Ok(())
     }
 
     /// Get all facts where the given entity is source or target.
@@ -335,5 +428,163 @@ mod tests {
     fn test_edge_id_display() {
         let id = EdgeId(7);
         assert_eq!(format!("{}", id), "edge:7");
+    }
+
+    // --- v0.1b tests ---
+
+    #[test]
+    fn test_update_entity() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("project", "hora", None, None).unwrap();
+
+        hora.update_entity(
+            id,
+            EntityUpdate {
+                name: Some("hora-graph-core".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let entity = hora.get_entity(id).unwrap().unwrap();
+        assert_eq!(entity.name, "hora-graph-core");
+        assert_eq!(entity.entity_type, "project"); // unchanged
+    }
+
+    #[test]
+    fn test_update_entity_not_found() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let result = hora.update_entity(EntityId(999), EntityUpdate::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_entity_cascades() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("project", "hora", None, None).unwrap();
+        let b = hora.add_entity("language", "Rust", None, None).unwrap();
+        let fact_id = hora.add_fact(a, b, "built_with", "desc", None).unwrap();
+
+        hora.delete_entity(a).unwrap();
+
+        // Entity gone
+        assert!(hora.get_entity(a).unwrap().is_none());
+        // Edge cascade-deleted
+        assert!(hora.get_fact(fact_id).unwrap().is_none());
+        // Other entity untouched
+        assert!(hora.get_entity(b).unwrap().is_some());
+        // b's edge list is clean
+        assert_eq!(hora.get_entity_facts(b).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_delete_entity_not_found() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let result = hora.delete_entity(EntityId(999));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalidate_fact() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("a", "x", None, None).unwrap();
+        let b = hora.add_entity("b", "y", None, None).unwrap();
+        let fact_id = hora.add_fact(a, b, "rel", "desc", None).unwrap();
+
+        hora.invalidate_fact(fact_id).unwrap();
+
+        let fact = hora.get_fact(fact_id).unwrap().unwrap();
+        assert!(fact.invalid_at > 0);
+        // Fact still exists, just marked as invalid
+    }
+
+    #[test]
+    fn test_invalidate_fact_twice_errors() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("a", "x", None, None).unwrap();
+        let b = hora.add_entity("b", "y", None, None).unwrap();
+        let fact_id = hora.add_fact(a, b, "rel", "desc", None).unwrap();
+
+        hora.invalidate_fact(fact_id).unwrap();
+        let result = hora.invalidate_fact(fact_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_fact() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("a", "x", None, None).unwrap();
+        let b = hora.add_entity("b", "y", None, None).unwrap();
+        let fact_id = hora.add_fact(a, b, "rel", "desc", None).unwrap();
+
+        hora.delete_fact(fact_id).unwrap();
+        assert!(hora.get_fact(fact_id).unwrap().is_none());
+        // Edge lists are clean
+        assert_eq!(hora.get_entity_facts(a).unwrap().len(), 0);
+        assert_eq!(hora.get_entity_facts(b).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_delete_fact_not_found() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let result = hora.delete_fact(EdgeId(999));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_fact() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("a", "x", None, None).unwrap();
+        let b = hora.add_entity("b", "y", None, None).unwrap();
+        let fact_id = hora.add_fact(a, b, "rel", "desc", Some(0.5)).unwrap();
+
+        hora.update_fact(
+            fact_id,
+            FactUpdate {
+                confidence: Some(0.95),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let fact = hora.get_fact(fact_id).unwrap().unwrap();
+        assert_eq!(fact.confidence, 0.95);
+        assert_eq!(fact.description, "desc"); // unchanged
+    }
+
+    #[test]
+    fn test_props_macro() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora
+            .add_entity(
+                "project",
+                "hora",
+                Some(props! { "language" => "Rust", "stars" => 42 }),
+                None,
+            )
+            .unwrap();
+
+        let entity = hora.get_entity(id).unwrap().unwrap();
+        assert_eq!(
+            entity.properties.get("language"),
+            Some(&PropertyValue::String("Rust".into()))
+        );
+        assert_eq!(entity.properties.get("stars"), Some(&PropertyValue::Int(42)));
+    }
+
+    #[test]
+    fn test_stats_after_delete() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("a", "x", None, None).unwrap();
+        let b = hora.add_entity("b", "y", None, None).unwrap();
+        hora.add_fact(a, b, "rel", "desc", None).unwrap();
+
+        assert_eq!(hora.stats().unwrap().entities, 2);
+        assert_eq!(hora.stats().unwrap().edges, 1);
+
+        hora.delete_entity(a).unwrap();
+
+        assert_eq!(hora.stats().unwrap().entities, 1);
+        assert_eq!(hora.stats().unwrap().edges, 0); // cascade
     }
 }
