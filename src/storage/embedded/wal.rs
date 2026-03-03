@@ -200,6 +200,16 @@ impl WriteAheadLog {
         self.header.checkpoint_seq
     }
 
+    /// Access the WAL header.
+    pub fn header(&self) -> &WalHeader {
+        &self.header
+    }
+
+    /// Access all frames in the WAL.
+    pub fn frames(&self) -> &[WalFrame] {
+        &self.frames
+    }
+
     /// Write a page to the WAL.
     ///
     /// Returns `true` if auto-checkpoint threshold was reached (caller

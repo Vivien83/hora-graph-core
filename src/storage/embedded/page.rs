@@ -184,6 +184,35 @@ impl PageAllocator {
         self.page_size
     }
 
+    /// Head of the freelist chain (page number, 0 = empty).
+    pub fn freelist_head(&self) -> u32 {
+        self.freelist_head
+    }
+
+    /// Construct from raw file data (for recovery/deserialization).
+    ///
+    /// Splits `data` into pages of `page_size` bytes each.
+    /// Trailing bytes shorter than a full page are discarded.
+    pub fn from_file_data(
+        page_size: usize,
+        data: &[u8],
+        freelist_head: u32,
+        freelist_count: u32,
+    ) -> Self {
+        let page_count = data.len() / page_size;
+        let mut pages = Vec::with_capacity(page_count);
+        for i in 0..page_count {
+            let offset = i * page_size;
+            pages.push(data[offset..offset + page_size].to_vec());
+        }
+        Self {
+            page_size,
+            pages,
+            freelist_head,
+            freelist_count,
+        }
+    }
+
     /// Allocate a new page of the given type.
     ///
     /// Prefers reusing a free page from the freelist. If the freelist is
