@@ -48,13 +48,21 @@ impl fmt::Display for HoraError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "I/O error: {}", e),
-            Self::CorruptedFile { page, expected_checksum, actual_checksum } => write!(
+            Self::CorruptedFile {
+                page,
+                expected_checksum,
+                actual_checksum,
+            } => write!(
                 f,
                 "corrupted page {}: expected checksum 0x{:08x}, got 0x{:08x}",
                 page, expected_checksum, actual_checksum
             ),
             Self::InvalidFile { reason } => write!(f, "invalid .hora file: {}", reason),
-            Self::VersionMismatch { file_version, min_supported, max_supported } => write!(
+            Self::VersionMismatch {
+                file_version,
+                min_supported,
+                max_supported,
+            } => write!(
                 f,
                 "version {} not supported (supported: {}-{})",
                 file_version, min_supported, max_supported
@@ -62,7 +70,11 @@ impl fmt::Display for HoraError {
             Self::EntityNotFound(id) => write!(f, "entity {} not found", id),
             Self::EdgeNotFound(id) => write!(f, "edge {} not found", id),
             Self::DimensionMismatch { expected, got } => {
-                write!(f, "embedding dimension mismatch: expected {}, got {}", expected, got)
+                write!(
+                    f,
+                    "embedding dimension mismatch: expected {}, got {}",
+                    expected, got
+                )
             }
             Self::AlreadyInvalidated(id) => write!(f, "fact {} is already invalidated", id),
             Self::StringTooLong { max, got } => {

@@ -266,10 +266,9 @@ impl Database {
         fh.write_to(alloc.write_page(0)?);
 
         // Persist to disk
-        write_pages_to_file(&alloc, path)
-            .map_err(|_| HoraError::InvalidFile {
-                reason: "cannot write new database file",
-            })?;
+        write_pages_to_file(&alloc, path).map_err(|_| HoraError::InvalidFile {
+            reason: "cannot write new database file",
+        })?;
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -655,10 +654,7 @@ mod tests {
         // Reopen — data should persist
         let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
         assert_eq!(db2.alloc().page_count(), 2);
-        assert_eq!(
-            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
-            0xAA
-        );
+        assert_eq!(db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE], 0xAA);
     }
 
     #[test]
@@ -684,10 +680,7 @@ mod tests {
 
         // Reopen → WAL should be replayed
         let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
-        assert_eq!(
-            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
-            0xBB
-        );
+        assert_eq!(db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE], 0xBB);
         // WAL file should be removed after recovery
         assert!(!wal_path(&path).exists());
     }
@@ -725,10 +718,7 @@ mod tests {
 
         // Reopen — only frame 1 should be recovered
         let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
-        assert_eq!(
-            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
-            0x11
-        );
+        assert_eq!(db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE], 0x11);
         // Page 2 should NOT have the WAL data (frame was partial)
         // It may or may not exist depending on whether allocator extended
     }
@@ -786,10 +776,7 @@ mod tests {
         // Reopen normally
         let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
         assert_eq!(db2.alloc().page_count(), 2);
-        assert_eq!(
-            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
-            0xDD
-        );
+        assert_eq!(db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE], 0xDD);
     }
 
     #[test]
@@ -857,10 +844,7 @@ mod tests {
         // Reopen — allocator should have grown to include page 5
         let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
         assert!(db2.alloc().page_count() > 5);
-        assert_eq!(
-            db2.alloc().read_page(5).unwrap()[PAGE_HEADER_SIZE],
-            0xEE
-        );
+        assert_eq!(db2.alloc().read_page(5).unwrap()[PAGE_HEADER_SIZE], 0xEE);
     }
 
     #[test]
@@ -1001,10 +985,7 @@ mod tests {
 
         // Reopen — committed data persists
         let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
-        assert_eq!(
-            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
-            0xAA
-        );
+        assert_eq!(db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE], 0xAA);
     }
 
     #[test]
@@ -1074,16 +1055,10 @@ mod tests {
 
         // Reopen — only committed frame should be recovered
         let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
-        assert_eq!(
-            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
-            0xAA
-        );
+        assert_eq!(db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE], 0xAA);
         // Page 2 should NOT have uncommitted data
         if db2.alloc().page_count() > 2 {
-            assert_ne!(
-                db2.alloc().read_page(2).unwrap()[PAGE_HEADER_SIZE],
-                0xBB
-            );
+            assert_ne!(db2.alloc().read_page(2).unwrap()[PAGE_HEADER_SIZE], 0xBB);
         }
     }
 

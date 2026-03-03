@@ -23,7 +23,7 @@ impl Default for DarkNodeParams {
     fn default() -> Self {
         Self {
             silencing_threshold: -2.0,
-            silencing_delay_secs: 604_800.0,  // 7 days
+            silencing_delay_secs: 604_800.0, // 7 days
             recovery_threshold: 1.5,
             gc_eligible_after_secs: 7_776_000.0, // 90 days
         }

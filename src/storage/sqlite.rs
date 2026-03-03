@@ -215,9 +215,7 @@ fn row_to_entity(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
     let created_at: i64 = row.get(5)?;
 
     let properties = match props_blob {
-        Some(b) if !b.is_empty() => {
-            deserialize_properties(&b).unwrap_or_default()
-        }
+        Some(b) if !b.is_empty() => deserialize_properties(&b).unwrap_or_default(),
         _ => Properties::new(),
     };
 
@@ -410,9 +408,7 @@ impl StorageOps for SqliteStorage {
     fn get_entity_edge_ids(&self, entity_id: EntityId) -> Result<Vec<EdgeId>> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id FROM edges WHERE source_id = ?1 OR target_id = ?1",
-            )
+            .prepare("SELECT id FROM edges WHERE source_id = ?1 OR target_id = ?1")
             .map_err(sqlite_err)?;
 
         let ids = stmt
@@ -620,7 +616,8 @@ mod tests {
     fn put_entity_replaces_existing() {
         let mut s = SqliteStorage::open_in_memory().unwrap();
         s.put_entity(make_entity(1, "rust", "language")).unwrap();
-        s.put_entity(make_entity(1, "rust-lang", "programming")).unwrap();
+        s.put_entity(make_entity(1, "rust-lang", "programming"))
+            .unwrap();
 
         let got = s.get_entity(EntityId(1)).unwrap().unwrap();
         assert_eq!(got.name, "rust-lang");
@@ -853,14 +850,28 @@ mod tests {
     #[test]
     fn stats_counts() {
         let mut s = SqliteStorage::open_in_memory().unwrap();
-        assert_eq!(s.stats(), StorageStats { entities: 0, edges: 0, episodes: 0 });
+        assert_eq!(
+            s.stats(),
+            StorageStats {
+                entities: 0,
+                edges: 0,
+                episodes: 0
+            }
+        );
 
         s.put_entity(make_entity(1, "a", "node")).unwrap();
         s.put_entity(make_entity(2, "b", "node")).unwrap();
         s.put_edge(make_edge(10, 1, 2)).unwrap();
         s.put_episode(make_episode(1)).unwrap();
 
-        assert_eq!(s.stats(), StorageStats { entities: 2, edges: 1, episodes: 1 });
+        assert_eq!(
+            s.stats(),
+            StorageStats {
+                entities: 2,
+                edges: 1,
+                episodes: 1
+            }
+        );
     }
 
     // --- FTS5 ---
@@ -868,9 +879,12 @@ mod tests {
     #[test]
     fn fts_search_basic() {
         let mut s = SqliteStorage::open_in_memory().unwrap();
-        s.put_entity(make_entity(1, "authentication service", "service")).unwrap();
-        s.put_entity(make_entity(2, "user database", "database")).unwrap();
-        s.put_entity(make_entity(3, "auth middleware", "service")).unwrap();
+        s.put_entity(make_entity(1, "authentication service", "service"))
+            .unwrap();
+        s.put_entity(make_entity(2, "user database", "database"))
+            .unwrap();
+        s.put_entity(make_entity(3, "auth middleware", "service"))
+            .unwrap();
 
         let hits = s.fts_search("auth*", 10).unwrap();
         assert_eq!(hits.len(), 2);
@@ -883,7 +897,8 @@ mod tests {
     #[test]
     fn fts_search_after_delete() {
         let mut s = SqliteStorage::open_in_memory().unwrap();
-        s.put_entity(make_entity(1, "authentication", "service")).unwrap();
+        s.put_entity(make_entity(1, "authentication", "service"))
+            .unwrap();
         s.delete_entity(EntityId(1)).unwrap();
 
         let hits = s.fts_search("authentication", 10).unwrap();

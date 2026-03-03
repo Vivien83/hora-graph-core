@@ -97,14 +97,7 @@ mod mmap_unix {
     const MAP_PRIVATE: i32 = 2;
 
     extern "C" {
-        fn mmap(
-            addr: *mut u8,
-            len: usize,
-            prot: i32,
-            flags: i32,
-            fd: i32,
-            offset: i64,
-        ) -> *mut u8;
+        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
         fn munmap(addr: *mut u8, len: usize) -> i32;
     }
 
@@ -138,8 +131,7 @@ mod mmap_unix {
             }
 
             let fd = file.as_raw_fd();
-            let ptr =
-                unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_PRIVATE, fd, 0) };
+            let ptr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_PRIVATE, fd, 0) };
             if ptr == MAP_FAILED {
                 return Err(std::io::Error::last_os_error());
             }
@@ -171,8 +163,7 @@ mod mmap_unix {
             }
 
             let fd = file.as_raw_fd();
-            let ptr =
-                unsafe { mmap(std::ptr::null_mut(), new_len, PROT_READ, MAP_PRIVATE, fd, 0) };
+            let ptr = unsafe { mmap(std::ptr::null_mut(), new_len, PROT_READ, MAP_PRIVATE, fd, 0) };
             if ptr == MAP_FAILED {
                 return Err(std::io::Error::last_os_error());
             }
@@ -189,9 +180,7 @@ mod mmap_unix {
             let offset = page_num as usize * self.page_sz;
             let end = offset + self.page_sz;
             if end <= self.len && !self.ptr.is_null() {
-                Some(unsafe {
-                    std::slice::from_raw_parts(self.ptr.add(offset), self.page_sz)
-                })
+                Some(unsafe { std::slice::from_raw_parts(self.ptr.add(offset), self.page_sz) })
             } else {
                 None
             }

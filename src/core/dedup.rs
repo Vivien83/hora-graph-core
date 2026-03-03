@@ -120,7 +120,10 @@ mod tests {
     #[test]
     fn test_normalize_name_preserves_content() {
         assert_eq!(normalize_name("rust"), "rust");
-        assert_eq!(normalize_name("Rust Programming Language"), "rust programming language");
+        assert_eq!(
+            normalize_name("Rust Programming Language"),
+            "rust programming language"
+        );
     }
 
     #[test]
@@ -241,8 +244,13 @@ mod tests {
 
         // "rust graph engine fast" → tokens: [rust, graph, engine, fast]
         // intersection = 3, union = 4 → 0.75 >= 0.6
-        let result =
-            find_duplicate("rust graph engine fast", None, "project", &entities, &config);
+        let result = find_duplicate(
+            "rust graph engine fast",
+            None,
+            "project",
+            &entities,
+            &config,
+        );
         assert_eq!(result, Some(EntityId(1)));
     }
 

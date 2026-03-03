@@ -39,8 +39,7 @@ pub fn rrf_fuse(
 
     if let Some(br) = bm25_results {
         for (rank, hit) in br.iter().enumerate() {
-            *scores.entry(hit.entity_id).or_default() +=
-                BM25_WEIGHT / (K_RRF + rank as f64 + 1.0);
+            *scores.entry(hit.entity_id).or_default() += BM25_WEIGHT / (K_RRF + rank as f64 + 1.0);
         }
     }
 

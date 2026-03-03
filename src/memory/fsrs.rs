@@ -93,14 +93,8 @@ impl FsrsState {
     ///
     /// `boost` is the reconsolidation stability_multiplier (1.0 if no boost).
     /// After review: `S = max(S * boost, min_stability_days)`.
-    pub fn record_review(
-        &mut self,
-        now: f64,
-        boost: f64,
-        params: &FsrsParams,
-    ) {
-        self.stability_days =
-            (self.stability_days * boost).max(params.min_stability_days);
+    pub fn record_review(&mut self, now: f64, boost: f64, params: &FsrsParams) {
+        self.stability_days = (self.stability_days * boost).max(params.min_stability_days);
         self.last_review_at = now;
     }
 }
@@ -118,10 +112,7 @@ mod tests {
         let state = FsrsState::new(1000.0, 1.0);
         let params = default_params();
         let r = state.current_retrievability(1000.0, &params);
-        assert!(
-            (r - 1.0).abs() < 1e-10,
-            "R(t=0) should be 1.0, got {r}"
-        );
+        assert!((r - 1.0).abs() < 1e-10, "R(t=0) should be 1.0, got {r}");
     }
 
     #[test]
@@ -134,8 +125,14 @@ mod tests {
         let r_30d = state.current_retrievability(30.0 * SECS_PER_DAY, &params);
 
         assert!(r_1d < 1.0, "R after 1 day should be < 1.0, got {r_1d}");
-        assert!(r_7d < r_1d, "R after 7d={r_7d} should be < R after 1d={r_1d}");
-        assert!(r_30d < r_7d, "R after 30d={r_30d} should be < R after 7d={r_7d}");
+        assert!(
+            r_7d < r_1d,
+            "R after 7d={r_7d} should be < R after 1d={r_1d}"
+        );
+        assert!(
+            r_30d < r_7d,
+            "R after 30d={r_30d} should be < R after 7d={r_7d}"
+        );
         assert!(r_30d > 0.0, "R should still be > 0");
     }
 
@@ -237,7 +234,10 @@ mod tests {
 
         // After 100 days with S=1, R ≈ 0.43 (well below 1.0)
         let r_before = state.current_retrievability(100.0 * SECS_PER_DAY, &params);
-        assert!(r_before < 0.5, "R at 100 days should be < 0.5, got {r_before}");
+        assert!(
+            r_before < 0.5,
+            "R at 100 days should be < 0.5, got {r_before}"
+        );
 
         // Review at day 100
         state.record_review(100.0 * SECS_PER_DAY, 1.0, &params);

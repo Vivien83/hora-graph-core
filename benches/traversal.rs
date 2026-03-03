@@ -2,7 +2,10 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use hora_graph_core::{DedupConfig, EntityId, HoraConfig, HoraCore, TraverseOpts};
 
 fn bench_config() -> HoraConfig {
-    HoraConfig { dedup: DedupConfig::disabled(), ..Default::default() }
+    HoraConfig {
+        dedup: DedupConfig::disabled(),
+        ..Default::default()
+    }
 }
 
 // ── Zero-dep LCG RNG (reproducible, seed=42) ─────────────────────
@@ -57,15 +60,11 @@ fn bench_bfs(c: &mut Criterion) {
     let start = EntityId(1);
 
     for depth in [1, 2, 3] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(depth),
-            &depth,
-            |b, &depth| {
-                b.iter(|| {
-                    hora.traverse(start, TraverseOpts { depth }).unwrap();
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
+            b.iter(|| {
+                hora.traverse(start, TraverseOpts { depth }).unwrap();
+            });
+        });
     }
 
     group.finish();

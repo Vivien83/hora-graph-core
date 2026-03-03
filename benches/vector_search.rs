@@ -36,21 +36,13 @@ fn bench_cosine_similarity(c: &mut Criterion) {
         let a = random_vec(&mut rng, dim);
         let b = random_vec(&mut rng, dim);
 
-        group.bench_with_input(
-            BenchmarkId::new("dispatch", dim),
-            &dim,
-            |bench, _| {
-                bench.iter(|| cosine_similarity(&a, &b));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("dispatch", dim), &dim, |bench, _| {
+            bench.iter(|| cosine_similarity(&a, &b));
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("scalar", dim),
-            &dim,
-            |bench, _| {
-                bench.iter(|| cosine_scalar(&a, &b));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("scalar", dim), &dim, |bench, _| {
+            bench.iter(|| cosine_scalar(&a, &b));
+        });
     }
 
     group.finish();
@@ -81,15 +73,11 @@ fn bench_vector_search(c: &mut Criterion) {
 
         let query = random_vec(&mut rng, dim as usize);
 
-        group.bench_with_input(
-            BenchmarkId::new("top100", n),
-            &n,
-            |bench, _| {
-                bench.iter(|| {
-                    hora.vector_search(&query, 100).unwrap();
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("top100", n), &n, |bench, _| {
+            bench.iter(|| {
+                hora.vector_search(&query, 100).unwrap();
+            });
+        });
     }
 
     group.finish();

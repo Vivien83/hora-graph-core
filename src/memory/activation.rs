@@ -156,10 +156,7 @@ fn log_sum_exp(log_terms: &[f64]) -> f64 {
     if log_terms.is_empty() {
         return f64::NEG_INFINITY;
     }
-    let max_log = log_terms
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let max_log = log_terms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if max_log.is_infinite() {
         return f64::NEG_INFINITY;
     }
@@ -191,7 +188,10 @@ mod tests {
         let act_later = state.compute_activation(1000.0);
 
         // Activation should decrease over time (power law decay)
-        assert!(act_soon > act_later, "act_soon={act_soon} should be > act_later={act_later}");
+        assert!(
+            act_soon > act_later,
+            "act_soon={act_soon} should be > act_later={act_later}"
+        );
     }
 
     #[test]
@@ -282,7 +282,10 @@ mod tests {
             state10.record_access(i as f64 * 100.0);
         }
         let act10 = state10.compute_activation(now);
-        assert!(act > act10, "20 accesses ({act}) should > 10 accesses ({act10})");
+        assert!(
+            act > act10,
+            "20 accesses ({act}) should > 10 accesses ({act10})"
+        );
     }
 
     #[test]

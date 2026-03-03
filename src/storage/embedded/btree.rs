@@ -374,8 +374,7 @@ fn read_leaf_entries(page: &[u8], page_size: usize) -> Vec<LeafEntry> {
             page[cursor + 6],
             page[cursor + 7],
         ]);
-        let value_len =
-            u16::from_le_bytes([page[cursor + 8], page[cursor + 9]]) as usize;
+        let value_len = u16::from_le_bytes([page[cursor + 8], page[cursor + 9]]) as usize;
         let deleted = page[cursor + 10] != 0;
         cursor += LEAF_ENTRY_OVERHEAD;
 
@@ -394,7 +393,11 @@ fn read_leaf_entries(page: &[u8], page_size: usize) -> Vec<LeafEntry> {
     entries
 }
 
-fn write_leaf_entries(alloc: &mut PageAllocator, page_num: u32, entries: &[LeafEntry]) -> Result<()> {
+fn write_leaf_entries(
+    alloc: &mut PageAllocator,
+    page_num: u32,
+    entries: &[LeafEntry],
+) -> Result<()> {
     let page = alloc.write_page(page_num)?;
     let off = PAGE_HEADER_SIZE;
 
@@ -528,11 +531,11 @@ fn write_interior_page(
 
 fn read_interior_child(page: &[u8], index: usize) -> u32 {
     let off = PAGE_HEADER_SIZE + 2; // after key_count
-    // Children are at: off + 0, off + 12, off + 24, ...
-    // Interleaved: child(4) key(8) child(4) key(8) ...
-    // child_i is at: off + i * 12 for i=0, off + 4 + 8 + (i-1)*12 for i>0
-    // Actually: child_0 at off, then key_0(8)+child_1(4), key_1(8)+child_2(4), ...
-    // child_i at: off + i * 12
+                                    // Children are at: off + 0, off + 12, off + 24, ...
+                                    // Interleaved: child(4) key(8) child(4) key(8) ...
+                                    // child_i is at: off + i * 12 for i=0, off + 4 + 8 + (i-1)*12 for i>0
+                                    // Actually: child_0 at off, then key_0(8)+child_1(4), key_1(8)+child_2(4), ...
+                                    // child_i at: off + i * 12
     let pos = off + index * 12;
     u32::from_le_bytes([page[pos], page[pos + 1], page[pos + 2], page[pos + 3]])
 }
@@ -716,7 +719,11 @@ mod tests {
         }
 
         // Tree should have grown beyond the single root leaf
-        assert!(alloc.page_count() > 2, "expected multiple pages, got {}", alloc.page_count());
+        assert!(
+            alloc.page_count() > 2,
+            "expected multiple pages, got {}",
+            alloc.page_count()
+        );
 
         // All entries still retrievable
         for i in 1..=500u64 {

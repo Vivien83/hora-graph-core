@@ -24,10 +24,36 @@ impl SimpleRng {
 }
 
 const WORDS: &[&str] = &[
-    "authentication", "database", "engine", "graph", "knowledge", "memory", "network", "query",
-    "rust", "search", "server", "storage", "system", "temporal", "vector", "index", "cache",
-    "node", "edge", "entity", "embedding", "traversal", "algorithm", "benchmark", "performance",
-    "optimization", "concurrent", "distributed", "parallel", "streaming",
+    "authentication",
+    "database",
+    "engine",
+    "graph",
+    "knowledge",
+    "memory",
+    "network",
+    "query",
+    "rust",
+    "search",
+    "server",
+    "storage",
+    "system",
+    "temporal",
+    "vector",
+    "index",
+    "cache",
+    "node",
+    "edge",
+    "entity",
+    "embedding",
+    "traversal",
+    "algorithm",
+    "benchmark",
+    "performance",
+    "optimization",
+    "concurrent",
+    "distributed",
+    "parallel",
+    "streaming",
 ];
 
 fn random_text(rng: &mut SimpleRng, word_count: usize) -> String {
@@ -49,7 +75,10 @@ fn random_embedding(rng: &mut SimpleRng, dims: usize) -> Vec<f32> {
 const DIMS: usize = 128;
 
 fn build_hybrid_graph(n: usize) -> HoraCore {
-    let config = HoraConfig { embedding_dims: DIMS as u16, dedup: DedupConfig::disabled() };
+    let config = HoraConfig {
+        embedding_dims: DIMS as u16,
+        dedup: DedupConfig::disabled(),
+    };
     let mut hora = HoraCore::new(config).unwrap();
     let mut rng = SimpleRng::new(42);
 
@@ -80,52 +109,49 @@ fn bench_hybrid_search(c: &mut Criterion) {
         let mut hora = build_hybrid_graph(n);
 
         // Both legs
-        group.bench_with_input(
-            BenchmarkId::new("both_legs_top10", n),
-            &n,
-            |bench, _| {
-                bench.iter(|| {
-                    hora.search(
-                        Some(query_text),
-                        Some(&query_emb),
-                        SearchOpts { top_k: 10, ..Default::default() },
-                    )
-                    .unwrap();
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("both_legs_top10", n), &n, |bench, _| {
+            bench.iter(|| {
+                hora.search(
+                    Some(query_text),
+                    Some(&query_emb),
+                    SearchOpts {
+                        top_k: 10,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            });
+        });
 
         // Text only
-        group.bench_with_input(
-            BenchmarkId::new("text_only_top10", n),
-            &n,
-            |bench, _| {
-                bench.iter(|| {
-                    hora.search(
-                        Some(query_text),
-                        None,
-                        SearchOpts { top_k: 10, ..Default::default() },
-                    )
-                    .unwrap();
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("text_only_top10", n), &n, |bench, _| {
+            bench.iter(|| {
+                hora.search(
+                    Some(query_text),
+                    None,
+                    SearchOpts {
+                        top_k: 10,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            });
+        });
 
         // Vector only
-        group.bench_with_input(
-            BenchmarkId::new("vector_only_top10", n),
-            &n,
-            |bench, _| {
-                bench.iter(|| {
-                    hora.search(
-                        None,
-                        Some(&query_emb),
-                        SearchOpts { top_k: 10, ..Default::default() },
-                    )
-                    .unwrap();
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("vector_only_top10", n), &n, |bench, _| {
+            bench.iter(|| {
+                hora.search(
+                    None,
+                    Some(&query_emb),
+                    SearchOpts {
+                        top_k: 10,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            });
+        });
     }
 
     group.finish();

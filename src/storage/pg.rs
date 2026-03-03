@@ -156,7 +156,9 @@ impl PostgresStorage {
             client.batch_execute(idx).map_err(pg_err)?;
         }
 
-        Ok(Self { client: RefCell::new(client) })
+        Ok(Self {
+            client: RefCell::new(client),
+        })
     }
 
     /// Execute raw SQL (for test setup, migrations, etc.).
@@ -180,7 +182,10 @@ impl PostgresStorage {
             )
             .map_err(pg_err)?;
 
-        Ok(rows.iter().map(|r| EntityId(r.get::<_, i64>(0) as u64)).collect())
+        Ok(rows
+            .iter()
+            .map(|r| EntityId(r.get::<_, i64>(0) as u64))
+            .collect())
     }
 }
 
@@ -258,7 +263,8 @@ impl StorageOps for PostgresStorage {
         let props_blob = serialize_properties(&entity.properties)?;
         let emb_blob: Option<Vec<u8>> = entity.embedding.as_deref().map(serialize_embedding);
 
-        self.client.borrow_mut()
+        self.client
+            .borrow_mut()
             .execute(
                 "INSERT INTO entities (id, entity_type, name, properties, embedding, created_at) \
                  VALUES ($1, $2, $3, $4, $5, $6) \
@@ -283,7 +289,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn get_entity(&self, id: EntityId) -> Result<Option<Entity>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id, entity_type, name, properties, embedding, created_at \
                  FROM entities WHERE id = $1",
@@ -295,14 +303,17 @@ impl StorageOps for PostgresStorage {
     }
 
     fn delete_entity(&mut self, id: EntityId) -> Result<bool> {
-        let n = self.client.borrow_mut()
+        let n = self
+            .client
+            .borrow_mut()
             .execute("DELETE FROM entities WHERE id = $1", &[&(id.0 as i64)])
             .map_err(pg_err)?;
         Ok(n > 0)
     }
 
     fn put_edge(&mut self, edge: Edge) -> Result<()> {
-        self.client.borrow_mut()
+        self.client
+            .borrow_mut()
             .execute(
                 "INSERT INTO edges \
                  (id, source_id, target_id, relation_type, description, \
@@ -334,7 +345,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn get_edge(&self, id: EdgeId) -> Result<Option<Edge>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id, source_id, target_id, relation_type, description, \
                  confidence, valid_at, invalid_at, created_at \
@@ -347,7 +360,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn get_entity_edges(&self, entity_id: EntityId) -> Result<Vec<Edge>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id, source_id, target_id, relation_type, description, \
                  confidence, valid_at, invalid_at, created_at \
@@ -360,18 +375,25 @@ impl StorageOps for PostgresStorage {
     }
 
     fn get_entity_edge_ids(&self, entity_id: EntityId) -> Result<Vec<EdgeId>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id FROM edges WHERE source_id = $1 OR target_id = $1",
                 &[&(entity_id.0 as i64)],
             )
             .map_err(pg_err)?;
 
-        Ok(rows.iter().map(|r| EdgeId(r.get::<_, i64>(0) as u64)).collect())
+        Ok(rows
+            .iter()
+            .map(|r| EdgeId(r.get::<_, i64>(0) as u64))
+            .collect())
     }
 
     fn delete_edge(&mut self, id: EdgeId) -> Result<bool> {
-        let n = self.client.borrow_mut()
+        let n = self
+            .client
+            .borrow_mut()
             .execute("DELETE FROM edges WHERE id = $1", &[&(id.0 as i64)])
             .map_err(pg_err)?;
         Ok(n > 0)
@@ -381,7 +403,8 @@ impl StorageOps for PostgresStorage {
         let entity_ids_raw: Vec<u64> = episode.entity_ids.iter().map(|e| e.0).collect();
         let fact_ids_raw: Vec<u64> = episode.fact_ids.iter().map(|e| e.0).collect();
 
-        self.client.borrow_mut()
+        self.client
+            .borrow_mut()
             .execute(
                 "INSERT INTO episodes \
                  (id, source, session_id, entity_ids, fact_ids, created_at, consolidation_count) \
@@ -408,7 +431,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn get_episode(&self, id: u64) -> Result<Option<Episode>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id, source, session_id, entity_ids, fact_ids, \
                  created_at, consolidation_count \
@@ -421,7 +446,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn update_episode_consolidation(&mut self, id: u64, count: u32) -> Result<bool> {
-        let n = self.client.borrow_mut()
+        let n = self
+            .client
+            .borrow_mut()
             .execute(
                 "UPDATE episodes SET consolidation_count = $2 WHERE id = $1",
                 &[&(id as i64), &(count as i32)],
@@ -431,7 +458,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn scan_all_entities(&self) -> Result<Vec<Entity>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id, entity_type, name, properties, embedding, created_at FROM entities",
                 &[],
@@ -442,7 +471,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn scan_all_edges(&self) -> Result<Vec<Edge>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id, source_id, target_id, relation_type, description, \
                  confidence, valid_at, invalid_at, created_at FROM edges",
@@ -454,7 +485,9 @@ impl StorageOps for PostgresStorage {
     }
 
     fn scan_all_episodes(&self) -> Result<Vec<Episode>> {
-        let rows = self.client.borrow_mut()
+        let rows = self
+            .client
+            .borrow_mut()
             .query(
                 "SELECT id, source, session_id, entity_ids, fact_ids, \
                  created_at, consolidation_count FROM episodes",
@@ -467,7 +500,8 @@ impl StorageOps for PostgresStorage {
 
     fn stats(&self) -> StorageStats {
         let count = |table: &str| -> u64 {
-            self.client.borrow_mut()
+            self.client
+                .borrow_mut()
                 .query(&format!("SELECT COUNT(*) FROM {}", table), &[])
                 .ok()
                 .and_then(|rows| rows.first().map(|r| r.get::<_, i64>(0) as u64))
@@ -506,7 +540,9 @@ mod tests {
         let url = test_url()?;
         let storage = PostgresStorage::connect(&url).ok()?;
         // Clean slate
-        storage.execute_batch("DELETE FROM edges; DELETE FROM episodes; DELETE FROM entities;").ok()?;
+        storage
+            .execute_batch("DELETE FROM edges; DELETE FROM episodes; DELETE FROM entities;")
+            .ok()?;
         Some(storage)
     }
 
@@ -570,7 +606,8 @@ mod tests {
     fn put_entity_replaces_existing() {
         let Some(mut s) = setup() else { return };
         s.put_entity(make_entity(1, "rust", "language")).unwrap();
-        s.put_entity(make_entity(1, "rust-lang", "programming")).unwrap();
+        s.put_entity(make_entity(1, "rust-lang", "programming"))
+            .unwrap();
 
         let got = s.get_entity(EntityId(1)).unwrap().unwrap();
         assert_eq!(got.name, "rust-lang");
@@ -607,10 +644,19 @@ mod tests {
         s.put_entity(e).unwrap();
 
         let got = s.get_entity(EntityId(1)).unwrap().unwrap();
-        assert_eq!(got.properties.get("language"), Some(&PropertyValue::String("Rust".into())));
+        assert_eq!(
+            got.properties.get("language"),
+            Some(&PropertyValue::String("Rust".into()))
+        );
         assert_eq!(got.properties.get("stars"), Some(&PropertyValue::Int(42)));
-        assert_eq!(got.properties.get("score"), Some(&PropertyValue::Float(9.5)));
-        assert_eq!(got.properties.get("active"), Some(&PropertyValue::Bool(true)));
+        assert_eq!(
+            got.properties.get("score"),
+            Some(&PropertyValue::Float(9.5))
+        );
+        assert_eq!(
+            got.properties.get("active"),
+            Some(&PropertyValue::Bool(true))
+        );
     }
 
     // --- Embedding round-trip ---
@@ -780,14 +826,28 @@ mod tests {
     #[test]
     fn stats_counts() {
         let Some(mut s) = setup() else { return };
-        assert_eq!(s.stats(), StorageStats { entities: 0, edges: 0, episodes: 0 });
+        assert_eq!(
+            s.stats(),
+            StorageStats {
+                entities: 0,
+                edges: 0,
+                episodes: 0
+            }
+        );
 
         s.put_entity(make_entity(1, "a", "node")).unwrap();
         s.put_entity(make_entity(2, "b", "node")).unwrap();
         s.put_edge(make_edge(10, 1, 2)).unwrap();
         s.put_episode(make_episode(1)).unwrap();
 
-        assert_eq!(s.stats(), StorageStats { entities: 2, edges: 1, episodes: 1 });
+        assert_eq!(
+            s.stats(),
+            StorageStats {
+                entities: 2,
+                edges: 1,
+                episodes: 1
+            }
+        );
     }
 
     // --- FTS (tsvector) ---
@@ -795,9 +855,12 @@ mod tests {
     #[test]
     fn fts_search_basic() {
         let Some(mut s) = setup() else { return };
-        s.put_entity(make_entity(1, "authentication service", "service")).unwrap();
-        s.put_entity(make_entity(2, "user database", "database")).unwrap();
-        s.put_entity(make_entity(3, "auth middleware", "service")).unwrap();
+        s.put_entity(make_entity(1, "authentication service", "service"))
+            .unwrap();
+        s.put_entity(make_entity(2, "user database", "database"))
+            .unwrap();
+        s.put_entity(make_entity(3, "auth middleware", "service"))
+            .unwrap();
 
         // tsvector 'simple' uses prefix matching with :*
         let hits = s.fts_search("auth:*", 10).unwrap();
@@ -810,7 +873,8 @@ mod tests {
     #[test]
     fn fts_search_after_delete() {
         let Some(mut s) = setup() else { return };
-        s.put_entity(make_entity(1, "authentication", "service")).unwrap();
+        s.put_entity(make_entity(1, "authentication", "service"))
+            .unwrap();
         s.delete_entity(EntityId(1)).unwrap();
 
         let hits = s.fts_search("authentication", 10).unwrap();

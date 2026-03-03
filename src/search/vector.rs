@@ -274,7 +274,9 @@ pub fn top_k_brute_force(
 
     // Partial sort: we only need top-k
     if k < scored.len() {
-        scored.select_nth_unstable_by(k, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.select_nth_unstable_by(k, |a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored.truncate(k);
     }
 
@@ -299,7 +301,11 @@ mod tests {
     fn test_cosine_identical_vectors() {
         let a = make_vec(&[1.0, 2.0, 3.0, 4.0]);
         let sim = cosine_similarity(&a, &a);
-        assert!((sim - 1.0).abs() < 1e-5, "identical vectors should have cosine ~1.0, got {}", sim);
+        assert!(
+            (sim - 1.0).abs() < 1e-5,
+            "identical vectors should have cosine ~1.0, got {}",
+            sim
+        );
     }
 
     #[test]
@@ -307,7 +313,11 @@ mod tests {
         let a = make_vec(&[1.0, 0.0, 0.0, 0.0]);
         let b = make_vec(&[0.0, 1.0, 0.0, 0.0]);
         let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-5, "orthogonal vectors should have cosine ~0.0, got {}", sim);
+        assert!(
+            sim.abs() < 1e-5,
+            "orthogonal vectors should have cosine ~0.0, got {}",
+            sim
+        );
     }
 
     #[test]
@@ -315,7 +325,11 @@ mod tests {
         let a = make_vec(&[1.0, 2.0, 3.0]);
         let b = make_vec(&[-1.0, -2.0, -3.0]);
         let sim = cosine_similarity(&a, &b);
-        assert!((sim + 1.0).abs() < 1e-5, "opposite vectors should have cosine ~-1.0, got {}", sim);
+        assert!(
+            (sim + 1.0).abs() < 1e-5,
+            "opposite vectors should have cosine ~-1.0, got {}",
+            sim
+        );
     }
 
     #[test]
@@ -367,11 +381,8 @@ mod tests {
         let v3 = vec![0.0, 1.0, 0.0];
         let query = vec![1.0, 0.0, 0.0];
 
-        let entities: Vec<(EntityId, &[f32])> = vec![
-            (EntityId(1), &v1),
-            (EntityId(2), &v2),
-            (EntityId(3), &v3),
-        ];
+        let entities: Vec<(EntityId, &[f32])> =
+            vec![(EntityId(1), &v1), (EntityId(2), &v2), (EntityId(3), &v3)];
 
         let results = top_k_brute_force(&query, &entities, 2);
 

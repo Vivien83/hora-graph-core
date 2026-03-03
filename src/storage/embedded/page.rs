@@ -441,7 +441,12 @@ impl PageAllocator {
     fn read_freelist_next(&self, page_idx: usize) -> u32 {
         let buf = &self.pages[page_idx];
         let offset = PAGE_HEADER_SIZE;
-        u32::from_le_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+        u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ])
     }
 
     /// Read the entry count in a freelist page.
@@ -461,7 +466,12 @@ impl PageAllocator {
     fn read_freelist_entry(&self, page_idx: usize, idx: u16) -> u32 {
         let offset = PAGE_HEADER_SIZE + 6 + (idx as usize) * 4;
         let buf = &self.pages[page_idx];
-        u32::from_le_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+        u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ])
     }
 
     /// Write a free page ID at position `idx` in the freelist entries.
@@ -516,9 +526,15 @@ mod tests {
 
         // Verify page types
         let p1 = alloc.read_page(1).unwrap();
-        assert_eq!(PageHeader::read_from(p1).unwrap().page_type, PageType::EntityLeaf);
+        assert_eq!(
+            PageHeader::read_from(p1).unwrap().page_type,
+            PageType::EntityLeaf
+        );
         let p3 = alloc.read_page(3).unwrap();
-        assert_eq!(PageHeader::read_from(p3).unwrap().page_type, PageType::EdgeData);
+        assert_eq!(
+            PageHeader::read_from(p3).unwrap().page_type,
+            PageType::EdgeData
+        );
     }
 
     #[test]
@@ -550,9 +566,24 @@ mod tests {
         assert_eq!(alloc.page_count(), 5);
 
         // All should have correct types
-        assert_eq!(PageHeader::read_from(alloc.read_page(p1).unwrap()).unwrap().page_type, PageType::EntityLeaf);
-        assert_eq!(PageHeader::read_from(alloc.read_page(p4).unwrap()).unwrap().page_type, PageType::EdgeData);
-        assert_eq!(PageHeader::read_from(alloc.read_page(p6).unwrap()).unwrap().page_type, PageType::VectorData);
+        assert_eq!(
+            PageHeader::read_from(alloc.read_page(p1).unwrap())
+                .unwrap()
+                .page_type,
+            PageType::EntityLeaf
+        );
+        assert_eq!(
+            PageHeader::read_from(alloc.read_page(p4).unwrap())
+                .unwrap()
+                .page_type,
+            PageType::EdgeData
+        );
+        assert_eq!(
+            PageHeader::read_from(alloc.read_page(p6).unwrap())
+                .unwrap()
+                .page_type,
+            PageType::VectorData
+        );
     }
 
     #[test]

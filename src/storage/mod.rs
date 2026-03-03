@@ -1,8 +1,8 @@
-pub mod traits;
-pub mod memory;
-pub mod format;
 pub mod embedded;
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
+pub mod format;
+pub mod memory;
 #[cfg(feature = "postgres")]
 pub mod pg;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+pub mod traits;

@@ -12,12 +12,12 @@ pub use crate::core::types::{
     PropertyValue, StorageStats, TraverseOpts, TraverseResult,
 };
 pub use crate::error::{HoraError, Result};
-pub use crate::memory::dark_nodes::DarkNodeParams;
-pub use crate::memory::fsrs::FsrsParams;
-pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
 pub use crate::memory::consolidation::{
     ClsStats, ConsolidationParams, DreamCycleConfig, DreamCycleStats, LinkingStats, ReplayStats,
 };
+pub use crate::memory::dark_nodes::DarkNodeParams;
+pub use crate::memory::fsrs::FsrsParams;
+pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
@@ -142,12 +142,9 @@ impl HoraCore {
     /// Writes to a temporary file first, then renames for crash safety.
     /// Returns an error if this is an in-memory-only instance.
     pub fn flush(&self) -> Result<()> {
-        let path = self
-            .file_path
-            .as_ref()
-            .ok_or(HoraError::InvalidFile {
-                reason: "cannot flush an in-memory-only instance",
-            })?;
+        let path = self.file_path.as_ref().ok_or(HoraError::InvalidFile {
+            reason: "cannot flush an in-memory-only instance",
+        })?;
 
         let entities = self.storage.scan_all_entities()?;
         let edges = self.storage.scan_all_edges()?;
@@ -487,9 +484,7 @@ impl HoraCore {
 
                 result_edge_ids.push(edge.id);
 
-                if visited.insert(neighbor_id)
-                    && self.storage.get_entity(neighbor_id)?.is_some()
-                {
+                if visited.insert(neighbor_id) && self.storage.get_entity(neighbor_id)?.is_some() {
                     result_entity_ids.push(neighbor_id);
                     queue.push_back((neighbor_id, depth + 1));
                 }
@@ -568,7 +563,11 @@ impl HoraCore {
             .filter_map(|e| e.embedding.as_ref().map(|emb| (e.id, emb.as_slice())))
             .collect();
 
-        Ok(search::vector::top_k_brute_force(query, &with_embeddings, k))
+        Ok(search::vector::top_k_brute_force(
+            query,
+            &with_embeddings,
+            k,
+        ))
     }
 
     // --- Text Search (BM25) ---
@@ -620,11 +619,8 @@ impl HoraCore {
             None
         };
 
-        let mut results = search::hybrid::rrf_fuse(
-            vec_results.as_deref(),
-            bm25_results.as_deref(),
-            opts.top_k,
-        );
+        let mut results =
+            search::hybrid::rrf_fuse(vec_results.as_deref(), bm25_results.as_deref(), opts.top_k);
 
         // Filter out dark nodes unless include_dark is set
         if !opts.include_dark {
@@ -819,7 +815,11 @@ impl HoraCore {
             .iter_mut()
             .filter_map(|(&id, recon)| {
                 recon.tick(now, &self.reconsolidation_params);
-                if recon.is_dark() { Some(id) } else { None }
+                if recon.is_dark() {
+                    Some(id)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -973,11 +973,9 @@ impl HoraCore {
 
             // Check if a valid edge with same triplet already exists
             let existing_edges = self.storage.get_entity_edges(*source)?;
-            let existing = existing_edges.iter().find(|e| {
-                e.target == *target
-                    && e.relation_type == *relation
-                    && e.invalid_at == 0
-            });
+            let existing = existing_edges
+                .iter()
+                .find(|e| e.target == *target && e.relation_type == *relation && e.invalid_at == 0);
 
             if let Some(edge) = existing {
                 // Reinforce: bump confidence (cap at 1.0)
@@ -1341,7 +1339,9 @@ mod tests {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let a = hora.add_entity("project", "hora", None, None).unwrap();
         let b = hora.add_entity("language", "Rust", None, None).unwrap();
-        let _fact = hora.add_fact(a, b, "built_with", "hora is built with Rust", None).unwrap();
+        let _fact = hora
+            .add_fact(a, b, "built_with", "hora is built with Rust", None)
+            .unwrap();
         let edges = hora.get_entity_facts(a).unwrap();
         assert_eq!(edges.len(), 1);
     }
@@ -1375,7 +1375,8 @@ mod tests {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let a = hora.add_entity("project", "hora", None, None).unwrap();
         let b = hora.add_entity("language", "Rust", None, None).unwrap();
-        hora.add_fact(a, b, "built_with", "hora is built with Rust", None).unwrap();
+        hora.add_fact(a, b, "built_with", "hora is built with Rust", None)
+            .unwrap();
 
         // Edge visible from both source and target
         let from_a = hora.get_entity_facts(a).unwrap();
@@ -1401,7 +1402,10 @@ mod tests {
 
     #[test]
     fn test_embedding_dimension_mismatch() {
-        let config = HoraConfig { embedding_dims: 4, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 4,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
         let wrong_dims = vec![1.0, 2.0]; // 2 instead of 4
         let result = hora.add_entity("a", "x", None, Some(&wrong_dims));
@@ -1418,7 +1422,10 @@ mod tests {
 
     #[test]
     fn test_embedding_correct_dims() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
         let emb = vec![1.0, 2.0, 3.0];
         let id = hora.add_entity("a", "x", None, Some(&emb)).unwrap();
@@ -1430,16 +1437,24 @@ mod tests {
     fn test_properties() {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let mut props = Properties::new();
-        props.insert("language".to_string(), PropertyValue::String("Rust".to_string()));
+        props.insert(
+            "language".to_string(),
+            PropertyValue::String("Rust".to_string()),
+        );
         props.insert("stars".to_string(), PropertyValue::Int(42));
 
-        let id = hora.add_entity("project", "hora", Some(props), None).unwrap();
+        let id = hora
+            .add_entity("project", "hora", Some(props), None)
+            .unwrap();
         let entity = hora.get_entity(id).unwrap().unwrap();
         assert_eq!(
             entity.properties.get("language"),
             Some(&PropertyValue::String("Rust".to_string()))
         );
-        assert_eq!(entity.properties.get("stars"), Some(&PropertyValue::Int(42)));
+        assert_eq!(
+            entity.properties.get("stars"),
+            Some(&PropertyValue::Int(42))
+        );
     }
 
     #[test]
@@ -1619,7 +1634,10 @@ mod tests {
             entity.properties.get("language"),
             Some(&PropertyValue::String("Rust".into()))
         );
-        assert_eq!(entity.properties.get("stars"), Some(&PropertyValue::Int(42)));
+        assert_eq!(
+            entity.properties.get("stars"),
+            Some(&PropertyValue::Int(42))
+        );
     }
 
     #[test]
@@ -1740,8 +1758,12 @@ mod tests {
         let c = hora.add_entity("company", "BigCorp", None, None).unwrap();
 
         // Create facts — since they're created sequentially, valid_at increases
-        let f1 = hora.add_fact(a, b, "works_at", "Alice at Acme", None).unwrap();
-        let f2 = hora.add_fact(a, c, "works_at", "Alice at BigCorp", None).unwrap();
+        let f1 = hora
+            .add_fact(a, b, "works_at", "Alice at Acme", None)
+            .unwrap();
+        let f2 = hora
+            .add_fact(a, c, "works_at", "Alice at BigCorp", None)
+            .unwrap();
 
         let tl = hora.timeline(a).unwrap();
         assert_eq!(tl.len(), 2);
@@ -1813,12 +1835,7 @@ mod tests {
             let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
             a_id = hora.add_entity("project", "hora", None, None).unwrap();
             b_id = hora
-                .add_entity(
-                    "language",
-                    "Rust",
-                    Some(props! { "year" => 2015 }),
-                    None,
-                )
+                .add_entity("language", "Rust", Some(props! { "year" => 2015 }), None)
                 .unwrap();
             fact_id = hora
                 .add_fact(a_id, b_id, "built_with", "hora uses Rust", Some(0.95))
@@ -1839,10 +1856,7 @@ mod tests {
 
             let b = hora.get_entity(b_id).unwrap().unwrap();
             assert_eq!(b.name, "Rust");
-            assert_eq!(
-                b.properties.get("year"),
-                Some(&PropertyValue::Int(2015))
-            );
+            assert_eq!(b.properties.get("year"), Some(&PropertyValue::Int(2015)));
 
             let fact = hora.get_fact(fact_id).unwrap().unwrap();
             assert_eq!(fact.relation_type, "built_with");
@@ -1872,7 +1886,10 @@ mod tests {
 
     #[test]
     fn test_persistence_with_embeddings() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.hora");
 
@@ -2012,14 +2029,8 @@ mod tests {
                 Some(&PropertyValue::String("hora".into()))
             );
             assert_eq!(e.properties.get("stars"), Some(&PropertyValue::Int(42)));
-            assert_eq!(
-                e.properties.get("score"),
-                Some(&PropertyValue::Float(2.72))
-            );
-            assert_eq!(
-                e.properties.get("active"),
-                Some(&PropertyValue::Bool(true))
-            );
+            assert_eq!(e.properties.get("score"), Some(&PropertyValue::Float(2.72)));
+            assert_eq!(e.properties.get("active"), Some(&PropertyValue::Bool(true)));
         }
     }
 
@@ -2027,7 +2038,10 @@ mod tests {
 
     #[test]
     fn test_vector_search_basic() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         // Entity close to query
@@ -2051,7 +2065,10 @@ mod tests {
 
     #[test]
     fn test_vector_search_returns_exact_k() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         for i in 0..20 {
@@ -2066,7 +2083,10 @@ mod tests {
 
     #[test]
     fn test_vector_search_skips_no_embedding() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         // One with embedding, one without
@@ -2080,7 +2100,10 @@ mod tests {
 
     #[test]
     fn test_vector_search_dims_mismatch() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let hora = HoraCore::new(config).unwrap();
 
         // Query with wrong dimensions
@@ -2097,7 +2120,10 @@ mod tests {
 
     #[test]
     fn test_vector_search_empty_graph() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let hora = HoraCore::new(config).unwrap();
 
         let results = hora.vector_search(&[1.0, 0.0, 0.0], 10).unwrap();
@@ -2106,7 +2132,10 @@ mod tests {
 
     #[test]
     fn test_vector_search_k_larger_than_corpus() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "x", None, Some(&[1.0, 0.0, 0.0]))
@@ -2118,7 +2147,10 @@ mod tests {
 
     #[test]
     fn test_vector_search_scores_descending() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "x", None, Some(&[1.0, 0.0, 0.0]))
@@ -2170,13 +2202,7 @@ mod tests {
     fn test_text_search_tf_ranking() {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         // Same doc length, but entity 1 has "rust" 3 times vs entity 2's 1 time
-        hora.add_entity(
-            "a",
-            "rust rust rust",
-            None,
-            None,
-        )
-        .unwrap();
+        hora.add_entity("a", "rust rust rust", None, None).unwrap();
         hora.add_entity("b", "rust java python", None, None)
             .unwrap();
 
@@ -2258,7 +2284,10 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_both_legs() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         // Entity 1: strong vector match + text match → should rank highest
@@ -2275,7 +2304,10 @@ mod tests {
             .search(
                 Some("rust"),
                 Some(&[1.0, 0.0, 0.0]),
-                SearchOpts { top_k: 10, ..Default::default() },
+                SearchOpts {
+                    top_k: 10,
+                    ..Default::default()
+                },
             )
             .unwrap();
 
@@ -2291,18 +2323,17 @@ mod tests {
     #[test]
     fn test_hybrid_search_text_only_mode() {
         // embedding_dims=0 → vector leg skipped, pure BM25
-        let config = HoraConfig { embedding_dims: 0, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 0,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "rust language", None, None).unwrap();
         hora.add_entity("b", "python language", None, None).unwrap();
 
         let results = hora
-            .search(
-                Some("rust"),
-                None,
-                SearchOpts::default(),
-            )
+            .search(Some("rust"), None, SearchOpts::default())
             .unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2311,7 +2342,10 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_vector_only_mode() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "alpha", None, Some(&[1.0, 0.0, 0.0]))
@@ -2321,11 +2355,7 @@ mod tests {
 
         // No text query → vector leg only
         let results = hora
-            .search(
-                None,
-                Some(&[1.0, 0.0, 0.0]),
-                SearchOpts::default(),
-            )
+            .search(None, Some(&[1.0, 0.0, 0.0]), SearchOpts::default())
             .unwrap();
 
         assert_eq!(results[0].entity_id, EntityId(1));
@@ -2334,21 +2364,25 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_neither_leg() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
         hora.add_entity("a", "test", None, Some(&[1.0, 0.0, 0.0]))
             .unwrap();
 
-        let results = hora
-            .search(None, None, SearchOpts::default())
-            .unwrap();
+        let results = hora.search(None, None, SearchOpts::default()).unwrap();
 
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_hybrid_search_top_k_respected() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         for i in 0..20 {
@@ -2361,7 +2395,10 @@ mod tests {
             .search(
                 None,
                 Some(&[1.0, 0.0, 0.0]),
-                SearchOpts { top_k: 5, ..Default::default() },
+                SearchOpts {
+                    top_k: 5,
+                    ..Default::default()
+                },
             )
             .unwrap();
 
@@ -2370,7 +2407,10 @@ mod tests {
 
     #[test]
     fn test_hybrid_search_wrong_dims_skips_vector() {
-        let config = HoraConfig { embedding_dims: 3, dedup: DedupConfig::disabled() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            dedup: DedupConfig::disabled(),
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         hora.add_entity("a", "rust language", None, Some(&[1.0, 0.0, 0.0]))
@@ -2378,11 +2418,7 @@ mod tests {
 
         // Wrong embedding dims → vector leg skipped, BM25 only
         let results = hora
-            .search(
-                Some("rust"),
-                Some(&[1.0, 0.0]),
-                SearchOpts::default(),
-            )
+            .search(Some("rust"), Some(&[1.0, 0.0]), SearchOpts::default())
             .unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2396,8 +2432,12 @@ mod tests {
         // "hora-engine" and "Hora Engine" should be detected as duplicates
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
 
-        let id1 = hora.add_entity("project", "Hora Engine", None, None).unwrap();
-        let id2 = hora.add_entity("project", "hora-engine", None, None).unwrap();
+        let id1 = hora
+            .add_entity("project", "Hora Engine", None, None)
+            .unwrap();
+        let id2 = hora
+            .add_entity("project", "hora-engine", None, None)
+            .unwrap();
 
         // Should return the existing entity's ID
         assert_eq!(id1, id2);
@@ -2432,7 +2472,10 @@ mod tests {
 
     #[test]
     fn test_dedup_cosine_embedding() {
-        let config = HoraConfig { embedding_dims: 3, ..Default::default() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            ..Default::default()
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         let emb1 = [1.0, 0.0, 0.0];
@@ -2452,7 +2495,10 @@ mod tests {
 
     #[test]
     fn test_dedup_cosine_below_threshold() {
-        let config = HoraConfig { embedding_dims: 3, ..Default::default() };
+        let config = HoraConfig {
+            embedding_dims: 3,
+            ..Default::default()
+        };
         let mut hora = HoraCore::new(config).unwrap();
 
         let emb1 = [1.0, 0.0, 0.0];
@@ -2641,7 +2687,10 @@ mod tests {
         // Fan=10 → negative spreading (inhibition)
         for leaf in &leaves {
             let act = result[leaf];
-            assert!(act < 0.0, "Leaf should have negative activation (inhibition), got {act}");
+            assert!(
+                act < 0.0,
+                "Leaf should have negative activation (inhibition), got {act}"
+            );
         }
     }
 
@@ -2667,7 +2716,10 @@ mod tests {
         assert!(result.contains_key(&b));
         assert!(result.contains_key(&c));
         let d_act = result.get(&d).copied().unwrap_or(0.0);
-        assert!(d_act.abs() < f64::EPSILON, "D should have no activation at depth 2, got {d_act}");
+        assert!(
+            d_act.abs() < f64::EPSILON,
+            "D should have no activation at depth 2, got {d_act}"
+        );
     }
 
     #[test]
@@ -2686,7 +2738,10 @@ mod tests {
 
         // C receives activation from both A and B
         let c_act = result[&c];
-        assert!(c_act > 0.0, "C should have positive activation from 2 sources, got {c_act}");
+        assert!(
+            c_act > 0.0,
+            "C should have positive activation from 2 sources, got {c_act}"
+        );
     }
 
     #[test]
@@ -2809,8 +2864,8 @@ mod tests {
 
         // Override dark params: immediate silencing (0 delay, threshold 999)
         hora.dark_node_params = DarkNodeParams {
-            silencing_threshold: 999.0,   // everything is below this
-            silencing_delay_secs: 0.0,    // no delay
+            silencing_threshold: 999.0, // everything is below this
+            silencing_delay_secs: 0.0,  // no delay
             recovery_threshold: 1.5,
             gc_eligible_after_secs: 0.0,
         };
@@ -2821,7 +2876,10 @@ mod tests {
         assert_eq!(count, 1, "Should mark 1 entity as dark");
 
         let phase = hora.get_memory_phase(id).unwrap().clone();
-        assert!(matches!(phase, MemoryPhase::Dark { .. }), "Expected Dark, got {phase:?}");
+        assert!(
+            matches!(phase, MemoryPhase::Dark { .. }),
+            "Expected Dark, got {phase:?}"
+        );
     }
 
     #[test]
@@ -2857,25 +2915,40 @@ mod tests {
         // transition entity out of Stable before dark_node_pass
         hora.reconsolidation_params.destabilization_threshold = 9999.0;
 
-        let _id = hora.add_entity("node", "invisible ghost", None, None).unwrap();
+        let _id = hora
+            .add_entity("node", "invisible ghost", None, None)
+            .unwrap();
 
         // Before dark_node_pass: entity visible in search
-        let results = hora.search(Some("ghost"), None, SearchOpts::default()).unwrap();
+        let results = hora
+            .search(Some("ghost"), None, SearchOpts::default())
+            .unwrap();
         assert_eq!(results.len(), 1, "Should find entity before silencing");
 
         hora.dark_node_pass();
 
         // After dark_node_pass: entity invisible by default
-        let results = hora.search(Some("ghost"), None, SearchOpts::default()).unwrap();
+        let results = hora
+            .search(Some("ghost"), None, SearchOpts::default())
+            .unwrap();
         assert_eq!(results.len(), 0, "Dark node should be invisible in search");
 
         // But visible with include_dark=true
-        let results = hora.search(
-            Some("ghost"),
-            None,
-            SearchOpts { include_dark: true, ..Default::default() },
-        ).unwrap();
-        assert_eq!(results.len(), 1, "Dark node should be visible with include_dark");
+        let results = hora
+            .search(
+                Some("ghost"),
+                None,
+                SearchOpts {
+                    include_dark: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "Dark node should be visible with include_dark"
+        );
     }
 
     #[test]
@@ -2894,17 +2967,25 @@ mod tests {
         hora.dark_node_pass();
 
         // Entity is Dark
-        assert!(matches!(hora.get_memory_phase(id).unwrap(), MemoryPhase::Dark { .. }));
+        assert!(matches!(
+            hora.get_memory_phase(id).unwrap(),
+            MemoryPhase::Dark { .. }
+        ));
 
         // Recovery → Labile
         let recovered = hora.attempt_recovery(id);
         assert!(recovered, "Recovery should succeed for dark node");
 
         let phase = hora.get_memory_phase(id).unwrap().clone();
-        assert!(matches!(phase, MemoryPhase::Labile { .. }), "Expected Labile after recovery, got {phase:?}");
+        assert!(
+            matches!(phase, MemoryPhase::Labile { .. }),
+            "Expected Labile after recovery, got {phase:?}"
+        );
 
         // Search should find it again
-        let results = hora.search(Some("recoverable"), None, SearchOpts::default()).unwrap();
+        let results = hora
+            .search(Some("recoverable"), None, SearchOpts::default())
+            .unwrap();
         assert_eq!(results.len(), 1, "Recovered entity should be searchable");
     }
 
@@ -2946,7 +3027,10 @@ mod tests {
         hora.dark_node_pass();
 
         let gc = hora.gc_candidates();
-        assert!(gc.contains(&id), "Dark entity should be GC candidate with 0s threshold");
+        assert!(
+            gc.contains(&id),
+            "Dark entity should be GC candidate with 0s threshold"
+        );
     }
 
     #[test]
@@ -3037,9 +3121,12 @@ mod tests {
     fn test_get_episodes_by_session() {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let e1 = hora.add_entity("node", "A", None, None).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s2", &[e1], &[]).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[])
+            .unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s2", &[e1], &[])
+            .unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[])
+            .unwrap();
 
         let eps = hora.get_episodes(Some("s1"), None, None, None).unwrap();
         assert_eq!(eps.len(), 2);
@@ -3050,11 +3137,16 @@ mod tests {
     fn test_get_episodes_by_source() {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let e1 = hora.add_entity("node", "A", None, None).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
-        hora.add_episode(EpisodeSource::Document, "s1", &[e1], &[]).unwrap();
-        hora.add_episode(EpisodeSource::Api, "s1", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[])
+            .unwrap();
+        hora.add_episode(EpisodeSource::Document, "s1", &[e1], &[])
+            .unwrap();
+        hora.add_episode(EpisodeSource::Api, "s1", &[e1], &[])
+            .unwrap();
 
-        let eps = hora.get_episodes(None, Some(EpisodeSource::Document), None, None).unwrap();
+        let eps = hora
+            .get_episodes(None, Some(EpisodeSource::Document), None, None)
+            .unwrap();
         assert_eq!(eps.len(), 1);
         assert_eq!(eps[0].source, EpisodeSource::Document);
     }
@@ -3063,7 +3155,9 @@ mod tests {
     fn test_get_episode_by_id() {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let e1 = hora.add_entity("node", "A", None, None).unwrap();
-        let ep_id = hora.add_episode(EpisodeSource::Api, "s1", &[e1], &[]).unwrap();
+        let ep_id = hora
+            .add_episode(EpisodeSource::Api, "s1", &[e1], &[])
+            .unwrap();
 
         let ep = hora.get_episode(ep_id).unwrap().unwrap();
         assert_eq!(ep.id, ep_id);
@@ -3074,7 +3168,9 @@ mod tests {
     fn test_consolidation_count_initial_zero() {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let e1 = hora.add_entity("node", "A", None, None).unwrap();
-        let ep_id = hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+        let ep_id = hora
+            .add_episode(EpisodeSource::Conversation, "s1", &[e1], &[])
+            .unwrap();
 
         let ep = hora.get_episode(ep_id).unwrap().unwrap();
         assert_eq!(ep.consolidation_count, 0);
@@ -3084,7 +3180,9 @@ mod tests {
     fn test_increment_consolidation() {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let e1 = hora.add_entity("node", "A", None, None).unwrap();
-        let ep_id = hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+        let ep_id = hora
+            .add_episode(EpisodeSource::Conversation, "s1", &[e1], &[])
+            .unwrap();
 
         hora.increment_consolidation(ep_id).unwrap();
         hora.increment_consolidation(ep_id).unwrap();
@@ -3196,7 +3294,8 @@ mod tests {
         let a = hora.add_entity("node", "A", None, None).unwrap();
         let b = hora.add_entity("node", "B", None, None).unwrap();
 
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[])
+            .unwrap();
 
         let act_a_before = hora.get_activation(a).unwrap();
         let act_b_before = hora.get_activation(b).unwrap();
@@ -3208,8 +3307,14 @@ mod tests {
         let act_a_after = hora.get_activation(a).unwrap();
         let act_b_after = hora.get_activation(b).unwrap();
 
-        assert!(act_a_after > act_a_before, "A activation should increase after replay");
-        assert!(act_b_after > act_b_before, "B activation should increase after replay");
+        assert!(
+            act_a_after > act_a_before,
+            "A activation should increase after replay"
+        );
+        assert!(
+            act_b_after > act_b_before,
+            "B activation should increase after replay"
+        );
     }
 
     #[test]
@@ -3219,7 +3324,8 @@ mod tests {
         let e = hora.add_entity("node", "A", None, None).unwrap();
 
         for i in 0..10 {
-            hora.add_episode(EpisodeSource::Conversation, &format!("s{i}"), &[e], &[]).unwrap();
+            hora.add_episode(EpisodeSource::Conversation, &format!("s{i}"), &[e], &[])
+                .unwrap();
         }
 
         let stats = hora.interleaved_replay().unwrap();
@@ -3235,7 +3341,8 @@ mod tests {
 
         // Create 20 episodes — first 10 are "older", last 10 are "recent"
         for i in 0..20 {
-            hora.add_episode(EpisodeSource::Conversation, &format!("s{i}"), &[e], &[]).unwrap();
+            hora.add_episode(EpisodeSource::Conversation, &format!("s{i}"), &[e], &[])
+                .unwrap();
         }
 
         let stats = hora.interleaved_replay().unwrap();
@@ -3250,7 +3357,8 @@ mod tests {
         let a = hora.add_entity("node", "A", None, None).unwrap();
         let b = hora.add_entity("node", "B", None, None).unwrap();
 
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[])
+            .unwrap();
 
         // Delete entity B
         hora.delete_entity(b).unwrap();
@@ -3280,14 +3388,22 @@ mod tests {
         let b = hora.add_entity("person", "Bob", None, None).unwrap();
 
         // Create the same fact in 3 different episodes
-        let f1 = hora.add_fact(a, b, "knows", "they know each other", None).unwrap();
+        let f1 = hora
+            .add_fact(a, b, "knows", "they know each other", None)
+            .unwrap();
         let f2 = hora.add_fact(a, b, "knows", "met at work", None).unwrap();
         let f3 = hora.add_fact(a, b, "knows", "colleagues", None).unwrap();
 
         // Create 3 episodes each referencing one of these facts, with consolidation_count >= 3
-        let ep1 = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f1]).unwrap();
-        let ep2 = hora.add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[f2]).unwrap();
-        let ep3 = hora.add_episode(EpisodeSource::Conversation, "s3", &[a, b], &[f3]).unwrap();
+        let ep1 = hora
+            .add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f1])
+            .unwrap();
+        let ep2 = hora
+            .add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[f2])
+            .unwrap();
+        let ep3 = hora
+            .add_episode(EpisodeSource::Conversation, "s3", &[a, b], &[f3])
+            .unwrap();
 
         // Manually set consolidation_count to threshold
         for _ in 0..3 {
@@ -3313,8 +3429,12 @@ mod tests {
         let f1 = hora.add_fact(a, b, "knows", "friends", None).unwrap();
 
         // Only 2 episodes — below threshold
-        let ep1 = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f1]).unwrap();
-        let ep2 = hora.add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[f1]).unwrap();
+        let ep1 = hora
+            .add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f1])
+            .unwrap();
+        let ep2 = hora
+            .add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[f1])
+            .unwrap();
 
         for _ in 0..3 {
             hora.increment_consolidation(ep1).unwrap();
@@ -3340,9 +3460,15 @@ mod tests {
         let fact_id = hora.add_fact(a, b, "knows", "friends", Some(0.8)).unwrap();
 
         // Reference the same fact_id in 3 episodes
-        let ep1 = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[fact_id]).unwrap();
-        let ep2 = hora.add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[fact_id]).unwrap();
-        let ep3 = hora.add_episode(EpisodeSource::Conversation, "s3", &[a, b], &[fact_id]).unwrap();
+        let ep1 = hora
+            .add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[fact_id])
+            .unwrap();
+        let ep2 = hora
+            .add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[fact_id])
+            .unwrap();
+        let ep3 = hora
+            .add_episode(EpisodeSource::Conversation, "s3", &[a, b], &[fact_id])
+            .unwrap();
 
         for _ in 0..3 {
             hora.increment_consolidation(ep1).unwrap();
@@ -3370,7 +3496,9 @@ mod tests {
         let b = hora.add_entity("person", "Bob", None, None).unwrap();
         let f = hora.add_fact(a, b, "knows", "friends", None).unwrap();
 
-        let ep = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f]).unwrap();
+        let ep = hora
+            .add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f])
+            .unwrap();
         // Set to exactly threshold
         for _ in 0..3 {
             hora.increment_consolidation(ep).unwrap();
@@ -3399,9 +3527,13 @@ mod tests {
 
         // Verify edges exist
         let edges_a = hora.get_entity_facts(a).unwrap();
-        assert!(edges_a.iter().any(|e| e.target == b && e.relation_type == "temporally_linked"));
+        assert!(edges_a
+            .iter()
+            .any(|e| e.target == b && e.relation_type == "temporally_linked"));
         let edges_b = hora.get_entity_facts(b).unwrap();
-        assert!(edges_b.iter().any(|e| e.target == a && e.relation_type == "temporally_linked"));
+        assert!(edges_b
+            .iter()
+            .any(|e| e.target == a && e.relation_type == "temporally_linked"));
     }
 
     #[test]
@@ -3454,7 +3586,8 @@ mod tests {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let a = hora.add_entity("node", "A", None, None).unwrap();
         let b = hora.add_entity("node", "B", None, None).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[])
+            .unwrap();
 
         let config = DreamCycleConfig::default();
         let stats = hora.dream_cycle(&config).unwrap();
@@ -3496,7 +3629,8 @@ mod tests {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let a = hora.add_entity("node", "A", None, None).unwrap();
         let b = hora.add_entity("node", "B", None, None).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[])
+            .unwrap();
 
         let config = DreamCycleConfig::default();
         let stats1 = hora.dream_cycle(&config).unwrap();
@@ -3515,7 +3649,8 @@ mod tests {
         let a = hora.add_entity("node", "A", None, None).unwrap();
         let _b = hora.add_entity("node", "B", None, None).unwrap();
         let _c = hora.add_entity("node", "C", None, None).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[a], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a], &[])
+            .unwrap();
 
         let config = DreamCycleConfig::default();
         let stats = hora.dream_cycle(&config).unwrap();
@@ -3534,9 +3669,12 @@ mod tests {
         let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
         let e1 = hora.add_entity("node", "A", None, None).unwrap();
 
-        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s2", &[e1], &[]).unwrap();
-        hora.add_episode(EpisodeSource::Conversation, "s3", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[])
+            .unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s2", &[e1], &[])
+            .unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s3", &[e1], &[])
+            .unwrap();
 
         let eps = hora.get_episodes(None, None, None, None).unwrap();
         assert_eq!(eps.len(), 3);

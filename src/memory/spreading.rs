@@ -133,7 +133,10 @@ mod tests {
         // B should receive activation
         assert!(result.contains_key(&EntityId(2)));
         let b_act = result[&EntityId(2)];
-        assert!(b_act > 0.0, "B should have positive activation, got {b_act}");
+        assert!(
+            b_act > 0.0,
+            "B should have positive activation, got {b_act}"
+        );
     }
 
     #[test]
@@ -164,7 +167,10 @@ mod tests {
         // Fan=10 → negative spreading (inhibition)
         for i in 2..=11 {
             let act = result[&EntityId(i)];
-            assert!(act < 0.0, "Entity {i} should have negative activation (inhibition), got {act}");
+            assert!(
+                act < 0.0,
+                "Entity {i} should have negative activation (inhibition), got {act}"
+            );
         }
     }
 
@@ -228,7 +234,10 @@ mod tests {
 
         // C receives activation from both A and B
         let c_act = result[&EntityId(3)];
-        assert!(c_act > 0.0, "C should have positive activation from 2 sources");
+        assert!(
+            c_act > 0.0,
+            "C should have positive activation from 2 sources"
+        );
     }
 
     #[test]

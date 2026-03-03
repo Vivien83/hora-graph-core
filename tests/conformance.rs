@@ -5,7 +5,9 @@
 
 use hora_graph_core::storage::memory::MemoryStorage;
 use hora_graph_core::storage::traits::StorageOps;
-use hora_graph_core::{Edge, EdgeId, Entity, EntityId, Episode, EpisodeSource, PropertyValue, StorageStats};
+use hora_graph_core::{
+    Edge, EdgeId, Entity, EntityId, Episode, EpisodeSource, PropertyValue, StorageStats,
+};
 use std::collections::HashMap;
 
 // ── Factories ────────────────────────────────────────────────
@@ -78,7 +80,14 @@ fn episode(id: u64) -> Episode {
 
 fn test_backend_conformance(s: &mut dyn StorageOps) {
     // --- Empty state ---
-    assert_eq!(s.stats(), StorageStats { entities: 0, edges: 0, episodes: 0 });
+    assert_eq!(
+        s.stats(),
+        StorageStats {
+            entities: 0,
+            edges: 0,
+            episodes: 0
+        }
+    );
     assert!(s.get_entity(EntityId(1)).unwrap().is_none());
     assert!(s.get_edge(EdgeId(1)).unwrap().is_none());
     assert!(s.get_episode(1).unwrap().is_none());
@@ -108,10 +117,19 @@ fn test_backend_conformance(s: &mut dyn StorageOps) {
     let ep = entity_with_props(10);
     s.put_entity(ep).unwrap();
     let got = s.get_entity(EntityId(10)).unwrap().unwrap();
-    assert_eq!(got.properties.get("lang"), Some(&PropertyValue::String("Rust".into())));
+    assert_eq!(
+        got.properties.get("lang"),
+        Some(&PropertyValue::String("Rust".into()))
+    );
     assert_eq!(got.properties.get("stars"), Some(&PropertyValue::Int(42)));
-    assert_eq!(got.properties.get("score"), Some(&PropertyValue::Float(9.5)));
-    assert_eq!(got.properties.get("active"), Some(&PropertyValue::Bool(true)));
+    assert_eq!(
+        got.properties.get("score"),
+        Some(&PropertyValue::Float(9.5))
+    );
+    assert_eq!(
+        got.properties.get("active"),
+        Some(&PropertyValue::Bool(true))
+    );
     assert_eq!(got.properties.len(), 4);
 
     // --- Embedding round-trip ---
@@ -122,7 +140,12 @@ fn test_backend_conformance(s: &mut dyn StorageOps) {
 
     // No embedding
     s.put_entity(entity(21, "no-emb", "test")).unwrap();
-    assert!(s.get_entity(EntityId(21)).unwrap().unwrap().embedding.is_none());
+    assert!(s
+        .get_entity(EntityId(21))
+        .unwrap()
+        .unwrap()
+        .embedding
+        .is_none());
 
     // --- Edge CRUD ---
     s.put_entity(entity(100, "a", "node")).unwrap();
@@ -247,7 +270,8 @@ fn conformance_postgres() {
     };
     let mut storage = PostgresStorage::connect(&url).unwrap();
     // Clean slate
-    storage.execute_batch("DELETE FROM edges; DELETE FROM episodes; DELETE FROM entities;")
+    storage
+        .execute_batch("DELETE FROM edges; DELETE FROM episodes; DELETE FROM entities;")
         .unwrap();
     test_backend_conformance(&mut storage);
 }

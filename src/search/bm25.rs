@@ -12,10 +12,10 @@ use crate::search::SearchHit;
 
 const STOP_WORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "for", "from", "had", "has",
-    "have", "he", "her", "him", "his", "how", "if", "in", "into", "is", "it", "its", "just",
-    "me", "my", "no", "not", "of", "on", "or", "our", "out", "she", "so", "than", "that", "the",
-    "them", "then", "there", "these", "they", "this", "to", "up", "us", "was", "we", "were",
-    "what", "when", "which", "who", "will", "with", "you", "your",
+    "have", "he", "her", "him", "his", "how", "if", "in", "into", "is", "it", "its", "just", "me",
+    "my", "no", "not", "of", "on", "or", "our", "out", "she", "so", "than", "that", "the", "them",
+    "then", "there", "these", "they", "this", "to", "up", "us", "was", "we", "were", "what",
+    "when", "which", "who", "will", "with", "you", "your",
 ];
 
 fn is_stop_word(word: &str) -> bool {

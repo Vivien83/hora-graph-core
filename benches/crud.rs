@@ -2,7 +2,10 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use hora_graph_core::{DedupConfig, EntityId, HoraConfig, HoraCore};
 
 fn bench_config() -> HoraConfig {
-    HoraConfig { dedup: DedupConfig::disabled(), ..Default::default() }
+    HoraConfig {
+        dedup: DedupConfig::disabled(),
+        ..Default::default()
+    }
 }
 
 // ── Zero-dep LCG RNG (reproducible, seed=42) ─────────────────────

@@ -2,7 +2,10 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use hora_graph_core::{DedupConfig, HoraConfig, HoraCore};
 
 fn bench_config() -> HoraConfig {
-    HoraConfig { dedup: DedupConfig::disabled(), ..Default::default() }
+    HoraConfig {
+        dedup: DedupConfig::disabled(),
+        ..Default::default()
+    }
 }
 
 // ── Zero-dep LCG RNG ─────────────────────────────────────────────
@@ -25,10 +28,36 @@ impl SimpleRng {
 }
 
 const WORDS: &[&str] = &[
-    "authentication", "database", "engine", "graph", "knowledge", "memory", "network", "query",
-    "rust", "search", "server", "storage", "system", "temporal", "vector", "index", "cache",
-    "node", "edge", "entity", "embedding", "traversal", "algorithm", "benchmark", "performance",
-    "optimization", "concurrent", "distributed", "parallel", "streaming",
+    "authentication",
+    "database",
+    "engine",
+    "graph",
+    "knowledge",
+    "memory",
+    "network",
+    "query",
+    "rust",
+    "search",
+    "server",
+    "storage",
+    "system",
+    "temporal",
+    "vector",
+    "index",
+    "cache",
+    "node",
+    "edge",
+    "entity",
+    "embedding",
+    "traversal",
+    "algorithm",
+    "benchmark",
+    "performance",
+    "optimization",
+    "concurrent",
+    "distributed",
+    "parallel",
+    "streaming",
 ];
 
 fn random_text(rng: &mut SimpleRng, word_count: usize) -> String {
@@ -63,16 +92,11 @@ fn bench_bm25_search(c: &mut Criterion) {
     for n in [1_000, 10_000, 100_000] {
         let mut hora = build_graph(n);
 
-        group.bench_with_input(
-            BenchmarkId::new("top10", n),
-            &n,
-            |bench, _| {
-                bench.iter(|| {
-                    hora.text_search("authentication graph engine", 10)
-                        .unwrap();
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("top10", n), &n, |bench, _| {
+            bench.iter(|| {
+                hora.text_search("authentication graph engine", 10).unwrap();
+            });
+        });
     }
 
     group.finish();

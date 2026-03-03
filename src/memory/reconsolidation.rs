@@ -48,7 +48,7 @@ pub struct ReconsolidationParams {
 impl Default for ReconsolidationParams {
     fn default() -> Self {
         Self {
-            labile_window_secs: 18_000.0,  // 5 hours
+            labile_window_secs: 18_000.0,   // 5 hours
             restabilization_secs: 21_600.0, // 6 hours
             destabilization_threshold: 0.5,
             restabilization_boost: 1.2,
@@ -96,10 +96,10 @@ impl ReconsolidationState {
                 MemoryPhase::Labile { destabilized_at } => {
                     if now - destabilized_at >= params.labile_window_secs {
                         // Restabilization starts when the labile window expires
-                        let restab_start =
-                            destabilized_at + params.labile_window_secs;
-                        self.phase =
-                            MemoryPhase::Restabilizing { started_at: restab_start };
+                        let restab_start = destabilized_at + params.labile_window_secs;
+                        self.phase = MemoryPhase::Restabilizing {
+                            started_at: restab_start,
+                        };
                         changed = true;
                         // Continue: check if restabilization also completed
                     } else {
@@ -161,9 +161,7 @@ impl ReconsolidationState {
         // Resolve any pending time-based transitions first
         self.tick(now, params);
 
-        if self.phase == MemoryPhase::Stable
-            && activation >= params.destabilization_threshold
-        {
+        if self.phase == MemoryPhase::Stable && activation >= params.destabilization_threshold {
             self.phase = MemoryPhase::Labile {
                 destabilized_at: now,
             };

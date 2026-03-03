@@ -13,9 +13,7 @@ use std::io::{self, Read, Write};
 use crate::core::edge::Edge;
 use crate::core::entity::Entity;
 use crate::core::episode::Episode;
-use crate::core::types::{
-    EdgeId, EntityId, EpisodeSource, Properties, PropertyValue,
-};
+use crate::core::types::{EdgeId, EntityId, EpisodeSource, Properties, PropertyValue};
 use crate::error::{HoraError, Result};
 
 const MAGIC: [u8; 4] = *b"HORA";

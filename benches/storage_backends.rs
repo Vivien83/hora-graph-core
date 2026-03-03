@@ -74,7 +74,9 @@ fn bench_put_edge(c: &mut Criterion, name: &str, storage: &mut dyn StorageOps) {
     let mut id = 1u64;
     c.bench_with_input(BenchmarkId::new("put_edge", name), &(), |b, _| {
         b.iter(|| {
-            storage.put_edge(edge(id, (id % 100) + 1, ((id + 1) % 100) + 1)).unwrap();
+            storage
+                .put_edge(edge(id, (id % 100) + 1, ((id + 1) % 100) + 1))
+                .unwrap();
             id += 1;
         });
     });

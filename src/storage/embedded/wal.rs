@@ -127,7 +127,8 @@ impl WalFrame {
 
     /// Verify the frame's checksum.
     pub fn verify(&self) -> bool {
-        let expected = Self::compute_checksum(self.page_number, self.db_size, &self.salt, &self.data);
+        let expected =
+            Self::compute_checksum(self.page_number, self.db_size, &self.salt, &self.data);
         self.checksum == expected
     }
 
@@ -365,7 +366,9 @@ impl WriteAheadLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::embedded::page::{PageAllocator, PageType, DEFAULT_PAGE_SIZE, PAGE_HEADER_SIZE};
+    use crate::storage::embedded::page::{
+        PageAllocator, PageType, DEFAULT_PAGE_SIZE, PAGE_HEADER_SIZE,
+    };
 
     fn make_page_data(byte: u8) -> Vec<u8> {
         let mut data = vec![0u8; DEFAULT_PAGE_SIZE];
