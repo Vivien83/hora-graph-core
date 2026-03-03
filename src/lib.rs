@@ -15,7 +15,7 @@ pub use crate::error::{HoraError, Result};
 pub use crate::memory::dark_nodes::DarkNodeParams;
 pub use crate::memory::fsrs::FsrsParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
-pub use crate::memory::consolidation::ConsolidationParams;
+pub use crate::memory::consolidation::{ConsolidationParams, ReplayStats};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
@@ -55,6 +55,7 @@ pub struct HoraCore {
     dark_node_params: DarkNodeParams,
     fsrs_states: HashMap<EntityId, FsrsState>,
     fsrs_params: FsrsParams,
+    consolidation_params: ConsolidationParams,
 }
 
 impl HoraCore {
@@ -74,6 +75,7 @@ impl HoraCore {
             dark_node_params: DarkNodeParams::default(),
             fsrs_states: HashMap::new(),
             fsrs_params: FsrsParams::default(),
+            consolidation_params: ConsolidationParams::default(),
         })
     }
 
@@ -121,6 +123,7 @@ impl HoraCore {
                 dark_node_params: DarkNodeParams::default(),
                 fsrs_states: HashMap::new(),
                 fsrs_params: FsrsParams::default(),
+                consolidation_params: ConsolidationParams::default(),
             })
         } else {
             Ok(Self {
@@ -857,6 +860,62 @@ impl HoraCore {
             state.apply_shy_downscaling(factor);
         }
         count
+    }
+
+    /// Interleaved replay: re-activate entities from a mix of recent and old episodes.
+    ///
+    /// Selects up to `max_replay_items` episodes, split by `recent_ratio` (default 70%
+    /// recent, 30% older). For each selected episode, calls `record_access()` on every
+    /// referenced entity that still exists.
+    ///
+    /// Episodes are split at the median `created_at` timestamp: those above median are
+    /// "recent", the rest are "older". This is deterministic (no RNG required).
+    pub fn interleaved_replay(&mut self) -> Result<ReplayStats> {
+        let params = &self.consolidation_params;
+        let max = params.max_replay_items;
+        let ratio = params.recent_ratio.clamp(0.0, 1.0);
+
+        let mut all_episodes = self.storage.scan_all_episodes()?;
+        if all_episodes.is_empty() || max == 0 {
+            return Ok(ReplayStats {
+                episodes_replayed: 0,
+                entities_reactivated: 0,
+            });
+        }
+
+        // Sort by created_at ascending
+        all_episodes.sort_by_key(|e| e.created_at);
+
+        // Split at median into older (first half) and recent (second half)
+        let mid = all_episodes.len() / 2;
+        let (older, recent) = all_episodes.split_at(mid);
+
+        // Budget allocation
+        let recent_budget = ((max as f64) * ratio).ceil() as usize;
+        let older_budget = max.saturating_sub(recent_budget);
+
+        // Take from the end of each group (most recent within each group)
+        let selected_recent: Vec<_> = recent.iter().rev().take(recent_budget).collect();
+        let selected_older: Vec<_> = older.iter().rev().take(older_budget).collect();
+
+        let mut episodes_replayed = 0;
+        let mut entities_reactivated = 0;
+
+        for ep in selected_recent.iter().chain(selected_older.iter()) {
+            episodes_replayed += 1;
+            for &entity_id in &ep.entity_ids {
+                // Only reactivate if the entity still has an activation state
+                if self.activation_states.contains_key(&entity_id) {
+                    self.record_access(entity_id);
+                    entities_reactivated += 1;
+                }
+            }
+        }
+
+        Ok(ReplayStats {
+            episodes_replayed,
+            entities_reactivated,
+        })
     }
 
     // --- Spreading Activation ---
@@ -2835,6 +2894,87 @@ mod tests {
         assert!((after_a - before_a * 0.78).abs() < 1e-10);
         assert!((after_b - before_b * 0.78).abs() < 1e-10);
         assert!((after_c - before_c * 0.78).abs() < 1e-10);
+    }
+
+    // --- Interleaved Replay ---
+
+    #[test]
+    fn test_replay_boosts_entity_activation() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+
+        let act_a_before = hora.get_activation(a).unwrap();
+        let act_b_before = hora.get_activation(b).unwrap();
+
+        let stats = hora.interleaved_replay().unwrap();
+        assert_eq!(stats.episodes_replayed, 1);
+        assert_eq!(stats.entities_reactivated, 2);
+
+        let act_a_after = hora.get_activation(a).unwrap();
+        let act_b_after = hora.get_activation(b).unwrap();
+
+        assert!(act_a_after > act_a_before, "A activation should increase after replay");
+        assert!(act_b_after > act_b_before, "B activation should increase after replay");
+    }
+
+    #[test]
+    fn test_replay_respects_max_items() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.consolidation_params.max_replay_items = 3;
+        let e = hora.add_entity("node", "A", None, None).unwrap();
+
+        for i in 0..10 {
+            hora.add_episode(EpisodeSource::Conversation, &format!("s{i}"), &[e], &[]).unwrap();
+        }
+
+        let stats = hora.interleaved_replay().unwrap();
+        assert_eq!(stats.episodes_replayed, 3);
+    }
+
+    #[test]
+    fn test_replay_mix_recent_and_older() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.consolidation_params.max_replay_items = 10;
+        hora.consolidation_params.recent_ratio = 0.7;
+        let e = hora.add_entity("node", "A", None, None).unwrap();
+
+        // Create 20 episodes — first 10 are "older", last 10 are "recent"
+        for i in 0..20 {
+            hora.add_episode(EpisodeSource::Conversation, &format!("s{i}"), &[e], &[]).unwrap();
+        }
+
+        let stats = hora.interleaved_replay().unwrap();
+        // Budget: 10 total, ceil(10 * 0.7) = 7 recent, 3 older
+        assert_eq!(stats.episodes_replayed, 10);
+        assert_eq!(stats.entities_reactivated, 10);
+    }
+
+    #[test]
+    fn test_replay_ignores_deleted_entities() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+
+        // Delete entity B
+        hora.delete_entity(b).unwrap();
+
+        let stats = hora.interleaved_replay().unwrap();
+        assert_eq!(stats.episodes_replayed, 1);
+        // Only A should be reactivated (B was deleted)
+        assert_eq!(stats.entities_reactivated, 1);
+    }
+
+    #[test]
+    fn test_replay_empty_episodes() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let stats = hora.interleaved_replay().unwrap();
+        assert_eq!(stats.episodes_replayed, 0);
+        assert_eq!(stats.entities_reactivated, 0);
     }
 
     #[test]
