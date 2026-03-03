@@ -41,16 +41,24 @@ const FILE_HEADER_SIZE: usize = 32;
 /// ```
 #[derive(Debug, Clone)]
 pub struct FileHeader {
+    /// Magic bytes identifying a valid hora database file (`"HORA"`).
     pub magic: [u8; 4],
+    /// File format version number.
     pub version: u16,
+    /// Page size in bytes used by this database.
     pub page_size: u32,
+    /// Total number of pages in the database file.
     pub page_count: u32,
+    /// Page number of the first freelist page (0 = no freelist).
     pub freelist_page: u32,
+    /// Total number of free pages tracked in the freelist chain.
     pub freelist_count: u32,
+    /// CRC32 checksum of header bytes 0..22.
     pub header_checksum: u32,
 }
 
 impl FileHeader {
+    /// Create a new header for a fresh database with the given page size.
     pub fn new(page_size: u32) -> Self {
         Self {
             magic: FILE_MAGIC,

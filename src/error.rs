@@ -1,3 +1,5 @@
+//! Error types for hora-graph-core operations.
+
 use std::fmt;
 
 /// All errors returned by hora-graph-core.
@@ -5,42 +7,65 @@ use std::fmt;
 #[non_exhaustive]
 pub enum HoraError {
     // Storage
+    /// An I/O error occurred.
     Io(std::io::Error),
+    /// A page failed its CRC32 integrity check.
     CorruptedFile {
+        /// Page number that failed verification.
         page: u32,
+        /// Checksum stored in the page header.
         expected_checksum: u32,
+        /// Checksum computed from the page data.
         actual_checksum: u32,
     },
+    /// The file is structurally invalid (bad magic, header, etc.).
     InvalidFile {
+        /// Human-readable reason for the failure.
         reason: &'static str,
     },
+    /// The file was written by an unsupported version of the engine.
     VersionMismatch {
+        /// Version number found in the file.
         file_version: u16,
+        /// Minimum version this build can read.
         min_supported: u16,
+        /// Maximum version this build can read.
         max_supported: u16,
     },
 
     // Schema / Input
+    /// No entity exists with the given ID.
     EntityNotFound(u64),
+    /// No edge exists with the given ID.
     EdgeNotFound(u64),
+    /// Embedding dimension does not match the configured value.
     DimensionMismatch {
+        /// Dimension expected by the engine.
         expected: usize,
+        /// Dimension provided by the caller.
         got: usize,
     },
+    /// The fact has already been invalidated (bi-temporal soft-delete).
     AlreadyInvalidated(u64),
 
     // Capacity
+    /// A string value exceeds the maximum allowed byte length.
     StringTooLong {
+        /// Maximum allowed byte length.
         max: usize,
+        /// Actual byte length provided.
         got: usize,
     },
+    /// The storage backend has no space left to allocate new pages.
     StorageFull,
 
     // SQLite backend
+    /// A SQLite backend error.
     #[cfg(feature = "sqlite")]
     Sqlite(String),
 
     // PostgreSQL backend
+    /// A PostgreSQL backend error.
     #[cfg(feature = "postgres")]
     Postgres(String),
 }
@@ -105,4 +130,5 @@ impl From<std::io::Error> for HoraError {
     }
 }
 
+/// Result type alias for hora-graph-core operations.
 pub type Result<T> = std::result::Result<T, HoraError>;

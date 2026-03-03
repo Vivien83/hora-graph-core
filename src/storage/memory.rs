@@ -1,3 +1,5 @@
+//! In-memory storage backend — `HashMap`-based, zero persistence.
+
 use std::collections::HashMap;
 
 use crate::core::edge::Edge;
@@ -23,6 +25,7 @@ impl Default for MemoryStorage {
 }
 
 impl MemoryStorage {
+    /// Create a new empty in-memory storage instance.
     pub fn new() -> Self {
         Self {
             entities: HashMap::new(),

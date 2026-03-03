@@ -1,3 +1,9 @@
+//! hora-graph-core — Bio-inspired embedded knowledge graph engine.
+//!
+//! A pure-Rust knowledge graph with bi-temporal facts, vector/BM25 hybrid search,
+//! ACT-R memory activation, reconsolidation, dark nodes, FSRS scheduling,
+//! and a dream cycle for memory consolidation.
+
 pub mod core;
 pub mod error;
 pub mod memory;

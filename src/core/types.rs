@@ -1,3 +1,5 @@
+//! Core type definitions — IDs, configuration, property values, and query options.
+
 use std::collections::HashMap;
 use std::fmt;
 
@@ -25,9 +27,13 @@ impl fmt::Display for EdgeId {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum PropertyValue {
+    /// UTF-8 string value.
     String(std::string::String),
+    /// 64-bit signed integer value.
     Int(i64),
+    /// 64-bit floating-point value.
     Float(f64),
+    /// Boolean value.
     Bool(bool),
 }
 
@@ -89,16 +95,22 @@ macro_rules! props {
 /// Partial update for an entity. Only `Some` fields are applied.
 #[derive(Debug, Clone, Default)]
 pub struct EntityUpdate {
+    /// New name to apply, if any.
     pub name: Option<std::string::String>,
+    /// New entity type to apply, if any.
     pub entity_type: Option<std::string::String>,
+    /// New property map to apply, if any.
     pub properties: Option<Properties>,
+    /// New embedding vector to apply, if any.
     pub embedding: Option<Vec<f32>>,
 }
 
 /// Partial update for a fact. Only `Some` fields are applied.
 #[derive(Debug, Clone, Default)]
 pub struct FactUpdate {
+    /// New confidence score to apply, if any.
     pub confidence: Option<f32>,
+    /// New description to apply, if any.
     pub description: Option<std::string::String>,
 }
 
@@ -129,8 +141,11 @@ pub struct TraverseResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EpisodeSource {
+    /// Episode originated from a chat / dialogue session.
     Conversation,
+    /// Episode extracted from a document or file.
     Document,
+    /// Episode injected via an external API call.
     Api,
 }
 
@@ -181,8 +196,11 @@ pub struct HoraConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub struct StorageStats {
+    /// Total number of entities in the graph.
     pub entities: u64,
+    /// Total number of edges (facts) in the graph.
     pub edges: u64,
+    /// Total number of episodes stored.
     pub episodes: u64,
 }
 

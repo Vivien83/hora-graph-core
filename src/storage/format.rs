@@ -80,12 +80,19 @@ const HEADER_SIZE: usize = 48;
 /// Metadata stored in the file header.
 #[derive(Debug)]
 pub struct FileHeader {
+    /// Dimensionality of stored embeddings; 0 means text-only mode.
     pub embedding_dims: u16,
+    /// Next auto-increment value for entity IDs.
     pub next_entity_id: u64,
+    /// Next auto-increment value for edge IDs.
     pub next_edge_id: u64,
+    /// Next auto-increment value for episode IDs.
     pub next_episode_id: u64,
+    /// Number of entities serialized in the body.
     pub entity_count: u32,
+    /// Number of edges serialized in the body.
     pub edge_count: u32,
+    /// Number of episodes serialized in the body.
     pub episode_count: u32,
 }
 
@@ -414,9 +421,13 @@ pub fn serialize(
 /// Returned data from deserializing a .hora file.
 #[derive(Debug)]
 pub struct DeserializedGraph {
+    /// Parsed file header with ID counters and record counts.
     pub header: FileHeader,
+    /// All deserialized entities from the body.
     pub entities: Vec<Entity>,
+    /// All deserialized edges from the body.
     pub edges: Vec<Edge>,
+    /// All deserialized episodes from the body.
     pub episodes: Vec<Episode>,
 }
 
@@ -501,11 +512,17 @@ pub fn deserialize(r: &mut impl Read) -> Result<DeserializedGraph> {
 /// Result of verifying a .hora file.
 #[derive(Debug)]
 pub struct VerifyReport {
+    /// File format version read from the header.
     pub format_version: u16,
+    /// Number of entities declared in the header.
     pub entity_count: u32,
+    /// Number of edges declared in the header.
     pub edge_count: u32,
+    /// Number of episodes declared in the header.
     pub episode_count: u32,
+    /// Embedding dimensionality declared in the header.
     pub embedding_dims: u16,
+    /// Whether the CRC32 header checksum was present and matched (false for v1 files).
     pub checksum_verified: bool,
 }
 

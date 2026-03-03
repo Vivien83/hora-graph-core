@@ -1,3 +1,5 @@
+//! Search subsystem — vector (SIMD cosine), BM25+, and hybrid RRF fusion.
+
 pub mod bm25;
 pub mod hybrid;
 pub mod vector;
@@ -8,7 +10,9 @@ use crate::core::types::EntityId;
 #[derive(Debug, Clone, PartialEq)]
 #[must_use]
 pub struct SearchHit {
+    /// ID of the matching entity.
     pub entity_id: EntityId,
+    /// Relevance score (higher is better; scale depends on the search method).
     pub score: f32,
 }
 

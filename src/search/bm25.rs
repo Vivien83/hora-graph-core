@@ -66,6 +66,7 @@ impl Default for Bm25Index {
 }
 
 impl Bm25Index {
+    /// Create a new empty BM25 index with default parameters (k1=1.2, b=0.75).
     pub fn new() -> Self {
         Self {
             postings: HashMap::new(),

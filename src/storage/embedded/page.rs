@@ -30,22 +30,36 @@ pub const fn freelist_capacity(page_size: usize) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PageType {
+    /// Page is unallocated and available for reuse via the freelist.
     Free = 0,
+    /// B+ tree leaf page holding entity records.
     EntityLeaf = 1,
+    /// B+ tree interior (routing) page for the entity index.
     EntityInterior = 2,
+    /// Page storing serialized edge (fact) records.
     EdgeData = 3,
+    /// Interned string pool page for deduplicating long strings.
     StringPool = 4,
+    /// Page storing raw float32 embedding vectors.
     VectorData = 5,
+    /// BM25 inverted-index posting list page.
     Bm25Posting = 6,
+    /// BM25 dictionary (term → posting list pointer) page.
     Bm25Dict = 7,
+    /// Bi-temporal index page for time-range queries.
     TemporalIndex = 8,
+    /// Column-store page for entity property values.
     PropertyColumn = 9,
+    /// Page storing episode (interaction snapshot) records.
     EpisodeData = 10,
+    /// Page storing ACT-R activation log entries.
     ActivationLog = 11,
+    /// Overflow page for data that exceeds a single page.
     Overflow = 12,
 }
 
 impl PageType {
+    /// Convert a raw byte into a `PageType`, returning `None` for unknown values.
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
             0 => Some(Self::Free),
@@ -75,9 +89,13 @@ impl PageType {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct PageHeader {
+    /// Type tag identifying the page's role (entity, edge, free, etc.).
     pub page_type: PageType,
+    /// Reserved flags byte (currently unused, must be 0).
     pub flags: u8,
+    /// Number of items stored in this page.
     pub item_count: u16,
+    /// CRC32-IEEE checksum of the page payload (everything after the header).
     pub checksum: u32,
 }
 

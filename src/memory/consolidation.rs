@@ -90,10 +90,15 @@ pub struct LinkingStats {
 /// Per-step enable/disable configuration for the dream cycle.
 #[derive(Debug, Clone)]
 pub struct DreamCycleConfig {
+    /// Enable SHY synaptic downscaling step.
     pub shy: bool,
+    /// Enable interleaved episode replay step.
     pub replay: bool,
+    /// Enable CLS semantic transfer step.
     pub cls: bool,
+    /// Enable temporal memory linking step.
     pub linking: bool,
+    /// Enable dark node detection step.
     pub dark_check: bool,
     /// If true, actually delete GC-eligible dark entities.
     pub gc: bool,
@@ -115,10 +120,16 @@ impl Default for DreamCycleConfig {
 /// Aggregated statistics from a full dream cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DreamCycleStats {
+    /// Number of entities whose activation was downscaled by SHY.
     pub entities_downscaled: usize,
+    /// Statistics from the interleaved replay step.
     pub replay: ReplayStats,
+    /// Statistics from the CLS semantic transfer step.
     pub cls: ClsStats,
+    /// Statistics from the memory linking step.
     pub linking: LinkingStats,
+    /// Number of entities newly marked as dark nodes.
     pub dark_nodes_marked: usize,
+    /// Number of dark entities deleted by GC (0 unless `gc` is enabled).
     pub gc_deleted: usize,
 }

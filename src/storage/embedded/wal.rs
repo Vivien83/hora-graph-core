@@ -23,14 +23,20 @@ const DEFAULT_AUTO_CHECKPOINT: usize = 1000;
 /// WAL header (in-memory representation).
 #[derive(Debug, Clone)]
 pub struct WalHeader {
+    /// Magic bytes identifying a valid WAL file (`"WLOG"`).
     pub magic: [u8; 4],
+    /// WAL format version number.
     pub version: u16,
+    /// Page size in bytes this WAL was written for.
     pub page_size: u32,
+    /// Monotonically increasing checkpoint sequence number.
     pub checkpoint_seq: u64,
+    /// Per-checkpoint salt used to detect stale frames from previous eras.
     pub salt: [u8; 8],
 }
 
 impl WalHeader {
+    /// Create a new WAL header for the given page size.
     pub fn new(page_size: u32) -> Self {
         Self {
             magic: WAL_MAGIC,
@@ -92,10 +98,15 @@ impl WalHeader {
 /// A single WAL frame representing a page write.
 #[derive(Debug, Clone)]
 pub struct WalFrame {
+    /// Page number this frame applies to.
     pub page_number: u32,
+    /// Database page count at the time this frame was written.
     pub db_size: u32,
+    /// Salt copied from the WAL header at write time (for stale-frame detection).
     pub salt: [u8; 8],
+    /// CRC32 checksum of the frame header fields and page data.
     pub checksum: u32,
+    /// Raw page data (exactly `page_size` bytes).
     pub data: Vec<u8>,
 }
 
