@@ -255,9 +255,11 @@ fn write_entity(w: &mut impl Write, e: &Entity) -> io::Result<()> {
         Some(emb) => {
             write_u8(w, 1)?;
             write_u32(w, emb.len() as u32)?;
-            for &v in emb {
-                write_f32(w, v)?;
+            let mut bytes = vec![0u8; emb.len() * 4];
+            for (i, &v) in emb.iter().enumerate() {
+                bytes[i * 4..(i + 1) * 4].copy_from_slice(&v.to_le_bytes());
             }
+            w.write_all(&bytes)?;
         }
         None => {
             write_u8(w, 0)?;
@@ -275,10 +277,12 @@ fn read_entity(r: &mut impl Read) -> io::Result<Entity> {
     let has_embedding = read_u8(r)?;
     let embedding = if has_embedding != 0 {
         let len = read_u32(r)? as usize;
-        let mut emb = Vec::with_capacity(len);
-        for _ in 0..len {
-            emb.push(read_f32(r)?);
-        }
+        let mut bytes = vec![0u8; len * 4];
+        r.read_exact(&mut bytes)?;
+        let emb: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
         Some(emb)
     } else {
         None

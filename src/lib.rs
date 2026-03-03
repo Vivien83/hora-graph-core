@@ -58,6 +58,8 @@ pub struct HoraCore {
     next_episode_id: u64,
     file_path: Option<PathBuf>,
     bm25_index: Bm25Index,
+    bm25_built: bool,
+    pending_accesses: Vec<EntityId>,
     activation_states: HashMap<EntityId, ActivationState>,
     reconsolidation_states: HashMap<EntityId, ReconsolidationState>,
     reconsolidation_params: ReconsolidationParams,
@@ -78,6 +80,8 @@ impl HoraCore {
             next_episode_id: 1,
             file_path: None,
             bm25_index: Bm25Index::new(),
+            bm25_built: true,
+            pending_accesses: Vec::new(),
             activation_states: HashMap::new(),
             reconsolidation_states: HashMap::new(),
             reconsolidation_params: ReconsolidationParams::default(),
@@ -100,12 +104,9 @@ impl HoraCore {
             let mut reader = std::io::BufReader::new(file);
             let graph = format::deserialize(&mut reader)?;
 
-            // Rebuild MemoryStorage and BM25 index from deserialized data
+            // Rebuild MemoryStorage from deserialized data (BM25 is lazy)
             let mut storage = MemoryStorage::new();
-            let mut bm25 = Bm25Index::new();
             for entity in graph.entities {
-                let text = bm25::entity_text(&entity.name, &entity.properties);
-                bm25.index_document(entity.id.0 as u32, &text);
                 storage.put_entity(entity)?;
             }
             for edge in graph.edges {
@@ -125,7 +126,9 @@ impl HoraCore {
                 next_edge_id: graph.header.next_edge_id,
                 next_episode_id: graph.header.next_episode_id,
                 file_path: Some(path),
-                bm25_index: bm25,
+                bm25_index: Bm25Index::new(),
+                bm25_built: false,
+                pending_accesses: Vec::new(),
                 activation_states: HashMap::new(),
                 reconsolidation_states: HashMap::new(),
                 reconsolidation_params: ReconsolidationParams::default(),
@@ -143,6 +146,30 @@ impl HoraCore {
     }
 
     // --- Persistence ---
+
+    /// Flush pending access events to activation tracking.
+    fn flush_accesses(&mut self) {
+        if self.pending_accesses.is_empty() {
+            return;
+        }
+        let ids: Vec<EntityId> = self.pending_accesses.drain(..).collect();
+        for id in ids {
+            self.record_access(id);
+        }
+    }
+
+    /// Build the BM25 index from all entities if not already built.
+    fn ensure_bm25(&mut self) -> Result<()> {
+        if !self.bm25_built {
+            let entities = self.storage.scan_all_entities()?;
+            for entity in &entities {
+                let text = bm25::entity_text(&entity.name, &entity.properties);
+                self.bm25_index.index_document(entity.id.0 as u32, &text);
+            }
+            self.bm25_built = true;
+        }
+        Ok(())
+    }
 
     /// Flush all data to the backing file.
     ///
@@ -262,9 +289,11 @@ impl HoraCore {
             created_at: now_millis(),
         };
 
-        // Index for BM25 full-text search
-        let text = bm25::entity_text(&entity.name, &entity.properties);
-        self.bm25_index.index_document(id.0 as u32, &text);
+        // Index for BM25 full-text search (skip if lazy rebuild pending)
+        if self.bm25_built {
+            let text = bm25::entity_text(&entity.name, &entity.properties);
+            self.bm25_index.index_document(id.0 as u32, &text);
+        }
 
         // Initialize activation state
         let now_secs = entity.created_at as f64 / 1000.0;
@@ -288,11 +317,12 @@ impl HoraCore {
 
     /// Get an entity by ID. Returns `None` if not found.
     ///
-    /// Side-effect: records an access for ACT-R activation tracking.
+    /// Side-effect: buffers an access event for ACT-R activation tracking.
+    /// The actual activation computation is deferred until needed.
     pub fn get_entity(&mut self, id: EntityId) -> Result<Option<Entity>> {
         let entity = self.storage.get_entity(id)?;
         if entity.is_some() {
-            self.record_access(id);
+            self.pending_accesses.push(id);
         }
         Ok(entity)
     }
@@ -329,9 +359,11 @@ impl HoraCore {
             entity.embedding = Some(embedding);
         }
 
-        // Re-index for BM25
-        let text = bm25::entity_text(&entity.name, &entity.properties);
-        self.bm25_index.index_document(id.0 as u32, &text);
+        // Re-index for BM25 (skip if lazy rebuild pending)
+        if self.bm25_built {
+            let text = bm25::entity_text(&entity.name, &entity.properties);
+            self.bm25_index.index_document(id.0 as u32, &text);
+        }
 
         self.storage.put_entity(entity)
     }
@@ -349,7 +381,9 @@ impl HoraCore {
         }
 
         self.storage.delete_entity(id)?;
-        self.bm25_index.remove_document(id.0 as u32);
+        if self.bm25_built {
+            self.bm25_index.remove_document(id.0 as u32);
+        }
         self.activation_states.remove(&id);
         self.reconsolidation_states.remove(&id);
         self.fsrs_states.remove(&id);
@@ -584,6 +618,7 @@ impl HoraCore {
     /// Returns the top `k` matching entities. Entities without indexable text
     /// are invisible to BM25.
     pub fn text_search(&mut self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
+        self.ensure_bm25()?;
         Ok(self.bm25_index.search(query, k))
     }
 
@@ -616,6 +651,7 @@ impl HoraCore {
 
         // BM25 leg
         let bm25_results = if let Some(text) = query_text {
+            self.ensure_bm25()?;
             let results = self.bm25_index.search(text, candidate_k);
             if results.is_empty() {
                 None
@@ -654,6 +690,7 @@ impl HoraCore {
     /// Returns `f64::NEG_INFINITY` if the entity has never been accessed,
     /// or `None` if the entity doesn't exist.
     pub fn get_activation(&mut self, id: EntityId) -> Option<f64> {
+        self.flush_accesses();
         let now = now_millis() as f64 / 1000.0;
         self.activation_states
             .get_mut(&id)
@@ -1061,16 +1098,19 @@ impl HoraCore {
         let mut links_created = 0_usize;
         let mut links_reinforced = 0_usize;
 
+        let max_neighbors = self.consolidation_params.linking_max_neighbors;
+
         // Sliding window: for each entity, pair with subsequent entities within window
+        // O(n·k) cap via max_neighbors limit per entity
         for i in 0..entities.len() {
-            for j in (i + 1)..entities.len() {
-                let delta = entities[j].created_at - entities[i].created_at;
+            for ej in entities[(i + 1)..].iter().take(max_neighbors) {
+                let delta = ej.created_at - entities[i].created_at;
                 if delta >= window {
-                    break; // sorted, so all further j will also exceed window
+                    break; // sorted, so all further will also exceed window
                 }
 
                 let a = entities[i].id;
-                let b = entities[j].id;
+                let b = ej.id;
 
                 // Direction A→B
                 if let Some(&edge_id) = existing_links.get(&(a, b)) {
@@ -1127,6 +1167,7 @@ impl HoraCore {
                     })?;
                     links_created += 1;
                 }
+
             }
         }
 
@@ -1148,6 +1189,7 @@ impl HoraCore {
     ///
     /// Each step can be enabled/disabled via `DreamCycleConfig`.
     pub fn dream_cycle(&mut self, config: &DreamCycleConfig) -> Result<DreamCycleStats> {
+        self.flush_accesses();
         // 1. SHY
         let entities_downscaled = if config.shy {
             self.shy_downscaling(self.consolidation_params.shy_factor)

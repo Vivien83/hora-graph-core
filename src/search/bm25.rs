@@ -40,6 +40,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
 struct Posting {
     doc_id: u32,
     tf: u32,
+    doc_len: u32,
 }
 
 /// BM25+ inverted index for full-text search over entities.
@@ -108,7 +109,7 @@ impl Bm25Index {
         // Insert postings
         for (term, tf) in tf_map {
             let posting_list = self.postings.entry(term.to_string()).or_default();
-            posting_list.push(Posting { doc_id, tf });
+            posting_list.push(Posting { doc_id, tf, doc_len });
         }
 
         self.doc_lengths.insert(doc_id, doc_len);
@@ -154,8 +155,9 @@ impl Bm25Index {
             1.0
         };
 
-        // Accumulate scores per document
-        let mut scores: HashMap<u32, f64> = HashMap::new();
+        // Accumulate scores per document using dense Vec (O(1) access, no hashing)
+        let max_doc_id = self.doc_lengths.keys().copied().max().unwrap_or(0) as usize;
+        let mut scores = vec![0.0_f64; max_doc_id + 1];
 
         for token in &query_tokens {
             let idf = match self.idf_cache.get(token.as_str()) {
@@ -169,7 +171,7 @@ impl Bm25Index {
             };
 
             for posting in postings {
-                let dl = *self.doc_lengths.get(&posting.doc_id).unwrap_or(&1) as f64;
+                let dl = posting.doc_len as f64;
                 let tf = posting.tf as f64;
 
                 // BM25+ formula
@@ -177,12 +179,17 @@ impl Bm25Index {
                 let denominator = tf + self.k1 * (1.0 - self.b + self.b * dl / avgdl);
                 let score = idf * numerator / denominator;
 
-                *scores.entry(posting.doc_id).or_default() += score;
+                scores[posting.doc_id as usize] += score;
             }
         }
 
-        // Top-k extraction
-        let mut scored: Vec<(u32, f64)> = scores.into_iter().collect();
+        // Top-k extraction: collect only non-zero scores
+        let mut scored: Vec<(u32, f64)> = scores
+            .iter()
+            .enumerate()
+            .filter(|(_, &s)| s > 0.0)
+            .map(|(id, &s)| (id as u32, s))
+            .collect();
 
         if k < scored.len() {
             scored.select_nth_unstable_by(k, |a, b| {

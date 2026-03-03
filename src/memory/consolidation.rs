@@ -31,6 +31,9 @@ pub const DEFAULT_CLS_THRESHOLD: u32 = 3;
 /// Default temporal window for memory linking (6 hours in milliseconds).
 pub const DEFAULT_LINKING_WINDOW_MS: i64 = 6 * 3600 * 1000;
 
+/// Default maximum number of temporal neighbors linked per entity.
+pub const DEFAULT_LINKING_MAX_NEIGHBORS: usize = 20;
+
 /// Parameters for the consolidation cycle.
 #[derive(Debug, Clone)]
 pub struct ConsolidationParams {
@@ -44,6 +47,9 @@ pub struct ConsolidationParams {
     pub cls_threshold: u32,
     /// Temporal window for memory linking in milliseconds (default 6h).
     pub linking_window_ms: i64,
+    /// Maximum number of temporal neighbors linked per entity (default 20).
+    /// Caps the inner loop to O(n·k) instead of O(n²).
+    pub linking_max_neighbors: usize,
 }
 
 impl Default for ConsolidationParams {
@@ -54,6 +60,7 @@ impl Default for ConsolidationParams {
             max_replay_items: DEFAULT_MAX_REPLAY,
             cls_threshold: DEFAULT_CLS_THRESHOLD,
             linking_window_ms: DEFAULT_LINKING_WINDOW_MS,
+            linking_max_neighbors: DEFAULT_LINKING_MAX_NEIGHBORS,
         }
     }
 }
