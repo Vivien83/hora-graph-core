@@ -6,6 +6,7 @@ use crate::core::types::EntityId;
 
 /// A search result: entity ID + similarity score.
 #[derive(Debug, Clone, PartialEq)]
+#[must_use]
 pub struct SearchHit {
     pub entity_id: EntityId,
     pub score: f32,

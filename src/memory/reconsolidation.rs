@@ -9,6 +9,7 @@
 
 /// Phase of the reconsolidation state machine.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MemoryPhase {
     /// Memory is consolidated and stable.
     Stable,

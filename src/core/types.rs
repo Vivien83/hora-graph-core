@@ -23,6 +23,7 @@ impl fmt::Display for EdgeId {
 
 /// A property value attached to an entity.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum PropertyValue {
     String(std::string::String),
     Int(i64),
@@ -116,6 +117,7 @@ impl Default for TraverseOpts {
 
 /// Result of a graph traversal.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct TraverseResult {
     /// All entity IDs discovered during traversal, starting with the start node.
     pub entity_ids: Vec<EntityId>,
@@ -125,6 +127,7 @@ pub struct TraverseResult {
 
 /// Source of an episode.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EpisodeSource {
     Conversation,
     Document,
@@ -176,6 +179,7 @@ pub struct HoraConfig {
 
 /// Summary statistics for the knowledge graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
 pub struct StorageStats {
     pub entities: u64,
     pub edges: u64,

@@ -87,6 +87,7 @@ fn props_to_json(props: &Properties) -> String {
                 PropertyValue::Int(i) => serde_json::json!(*i),
                 PropertyValue::Float(f) => serde_json::json!(*f),
                 PropertyValue::Bool(b) => serde_json::Value::Bool(*b),
+                _ => serde_json::Value::String(format!("{:?}", v)),
             };
             (k.as_str(), jv)
         })

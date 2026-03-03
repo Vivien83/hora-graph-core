@@ -2,6 +2,7 @@ use std::fmt;
 
 /// All errors returned by hora-graph-core.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HoraError {
     // Storage
     Io(std::io::Error),

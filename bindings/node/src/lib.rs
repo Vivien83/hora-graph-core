@@ -114,6 +114,7 @@ fn props_to_js(props: &Properties) -> HashMap<String, String> {
                 PropertyValue::Int(i) => i.to_string(),
                 PropertyValue::Float(f) => f.to_string(),
                 PropertyValue::Bool(b) => b.to_string(),
+                _ => format!("{:?}", v),
             };
             (k.clone(), s)
         })
@@ -356,12 +357,13 @@ impl JsHoraCore {
     /// Returns "stable", "labile", "restabilizing", or "dark". Null if entity doesn't exist.
     #[napi]
     pub fn get_memory_phase(&mut self, entity_id: u32) -> Result<Option<String>> {
-        let phase = h!(Ok(self.inner.get_memory_phase(EntityId(entity_id as u64))))?;
+        let phase = self.inner.get_memory_phase(EntityId(entity_id as u64));
         Ok(phase.map(|p| match p {
             MemoryPhase::Stable => "stable".to_string(),
             MemoryPhase::Labile { .. } => "labile".to_string(),
             MemoryPhase::Restabilizing { .. } => "restabilizing".to_string(),
             MemoryPhase::Dark { .. } => "dark".to_string(),
+            _ => "unknown".to_string(),
         }))
     }
 
