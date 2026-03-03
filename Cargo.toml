@@ -39,3 +39,7 @@ harness = false
 [[bench]]
 name = "hybrid_search"
 harness = false
+
+[[bench]]
+name = "storage_backends"
+harness = false

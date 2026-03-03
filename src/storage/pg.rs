@@ -159,6 +159,11 @@ impl PostgresStorage {
         Ok(Self { client: RefCell::new(client) })
     }
 
+    /// Execute raw SQL (for test setup, migrations, etc.).
+    pub fn execute_batch(&self, sql: &str) -> Result<()> {
+        self.client.borrow_mut().batch_execute(sql).map_err(pg_err)
+    }
+
     /// Full-text search over entity names and types via tsvector.
     ///
     /// Returns matching entity IDs ranked by relevance.
@@ -501,11 +506,7 @@ mod tests {
         let url = test_url()?;
         let storage = PostgresStorage::connect(&url).ok()?;
         // Clean slate
-        storage
-            .client
-            .borrow_mut()
-            .batch_execute("DELETE FROM edges; DELETE FROM episodes; DELETE FROM entities;")
-            .ok()?;
+        storage.execute_batch("DELETE FROM edges; DELETE FROM episodes; DELETE FROM entities;").ok()?;
         Some(storage)
     }
 
