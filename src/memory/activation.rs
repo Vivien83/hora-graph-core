@@ -38,6 +38,8 @@ pub struct ActivationState {
     cached_activation: f64,
     /// Whether the cache needs recomputation.
     dirty: bool,
+    /// Cumulative SHY downscaling factor (default 1.0, multiplicative on BLL score).
+    shy_factor: f64,
 }
 
 impl ActivationState {
@@ -52,6 +54,7 @@ impl ActivationState {
             decay_d: DEFAULT_DECAY,
             cached_activation: f64::NEG_INFINITY,
             dirty: true,
+            shy_factor: 1.0,
         }
     }
 
@@ -88,9 +91,10 @@ impl ActivationState {
             log_sum_exp(&log_terms)
         };
 
-        self.cached_activation = result;
+        let scaled = result * self.shy_factor;
+        self.cached_activation = scaled;
         self.dirty = false;
-        result
+        scaled
     }
 
     /// Record an access at the given timestamp (epoch seconds).
@@ -119,6 +123,20 @@ impl ActivationState {
     /// Total number of recorded accesses (recent + historical).
     pub fn total_accesses(&self) -> u32 {
         self.historical_count + self.recent_count as u32
+    }
+
+    /// Apply SHY homeostatic downscaling: multiply the activation score by `factor`.
+    ///
+    /// This is cumulative: two calls with 0.78 result in `shy_factor = 0.78 * 0.78 = 0.6084`.
+    /// Affects both positive and negative activations (amplitude reduction).
+    pub fn apply_shy_downscaling(&mut self, factor: f64) {
+        self.shy_factor *= factor;
+        self.dirty = true;
+    }
+
+    /// Current cumulative SHY downscaling factor (1.0 = no downscaling applied).
+    pub fn shy_factor(&self) -> f64 {
+        self.shy_factor
     }
 
     /// Timestamp of the most recent access (epoch seconds), or `None` if never accessed.

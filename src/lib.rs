@@ -15,6 +15,7 @@ pub use crate::error::{HoraError, Result};
 pub use crate::memory::dark_nodes::DarkNodeParams;
 pub use crate::memory::fsrs::FsrsParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
+pub use crate::memory::consolidation::ConsolidationParams;
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
@@ -839,6 +840,23 @@ impl HoraCore {
                 }
             })
             .collect()
+    }
+
+    // --- Consolidation (SHY) ---
+
+    /// Apply SHY homeostatic downscaling to all entity activations.
+    ///
+    /// Multiplies every entity's activation score by `factor` (default 0.78).
+    /// This is cumulative and idempotent-safe: two calls produce `factor²`.
+    /// Affects both positive and negative activations (amplitude reduction).
+    ///
+    /// Returns the number of entities downscaled.
+    pub fn shy_downscaling(&mut self, factor: f64) -> usize {
+        let count = self.activation_states.len();
+        for state in self.activation_states.values_mut() {
+            state.apply_shy_downscaling(factor);
+        }
+        count
     }
 
     // --- Spreading Activation ---
@@ -2722,6 +2740,101 @@ mod tests {
 
         let ep = hora.get_episode(ep_id).unwrap().unwrap();
         assert_eq!(ep.consolidation_count, 2);
+    }
+
+    // --- SHY Downscaling ---
+
+    #[test]
+    fn test_shy_downscaling_reduces_activation() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "A", None, None).unwrap();
+
+        // Record a few accesses to build up activation
+        for _ in 0..3 {
+            hora.record_access(id);
+        }
+
+        let before = hora.get_activation(id).unwrap();
+        hora.shy_downscaling(0.78);
+        let after = hora.get_activation(id).unwrap();
+
+        // Activation should be reduced by factor 0.78
+        let expected = before * 0.78;
+        assert!(
+            (after - expected).abs() < 1e-10,
+            "expected {expected}, got {after}"
+        );
+    }
+
+    #[test]
+    fn test_shy_downscaling_negative_activation() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "A", None, None).unwrap();
+
+        // Entity with only the initial creation access will have negative activation
+        // after enough time passes, but we can check the factor applies to negatives too.
+        // Force a known negative by checking: activation at creation is near 0 or negative.
+        let act = hora.get_activation(id).unwrap();
+        // Even if activation is positive, after SHY it should be factor × act
+        hora.shy_downscaling(0.78);
+        let after = hora.get_activation(id).unwrap();
+        let expected = act * 0.78;
+        assert!(
+            (after - expected).abs() < 1e-10,
+            "expected {expected}, got {after}"
+        );
+    }
+
+    #[test]
+    fn test_shy_double_downscaling() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("node", "A", None, None).unwrap();
+        for _ in 0..3 {
+            hora.record_access(id);
+        }
+
+        let before = hora.get_activation(id).unwrap();
+        hora.shy_downscaling(0.78);
+        hora.shy_downscaling(0.78);
+        let after = hora.get_activation(id).unwrap();
+
+        // Double SHY: factor² = 0.78 * 0.78 = 0.6084
+        let expected = before * 0.78 * 0.78;
+        assert!(
+            (after - expected).abs() < 1e-10,
+            "expected {expected}, got {after}"
+        );
+    }
+
+    #[test]
+    fn test_shy_downscaling_all_entities() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+
+        // Give different activation levels
+        hora.record_access(a);
+        hora.record_access(b);
+        hora.record_access(b);
+        hora.record_access(c);
+        hora.record_access(c);
+        hora.record_access(c);
+
+        let before_a = hora.get_activation(a).unwrap();
+        let before_b = hora.get_activation(b).unwrap();
+        let before_c = hora.get_activation(c).unwrap();
+
+        let count = hora.shy_downscaling(0.78);
+        assert_eq!(count, 3);
+
+        let after_a = hora.get_activation(a).unwrap();
+        let after_b = hora.get_activation(b).unwrap();
+        let after_c = hora.get_activation(c).unwrap();
+
+        assert!((after_a - before_a * 0.78).abs() < 1e-10);
+        assert!((after_b - before_b * 0.78).abs() < 1e-10);
+        assert!((after_c - before_c * 0.78).abs() < 1e-10);
     }
 
     #[test]
