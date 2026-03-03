@@ -899,6 +899,53 @@ impl HoraCore {
         Ok(id)
     }
 
+    /// Get an episode by ID.
+    pub fn get_episode(&self, id: u64) -> Result<Option<Episode>> {
+        self.storage.get_episode(id)
+    }
+
+    /// Get all episodes, optionally filtered.
+    ///
+    /// Filters:
+    /// - `session_id`: only episodes from this session
+    /// - `source`: only episodes from this source type
+    /// - `since`/`until`: epoch millis time range on `created_at`
+    pub fn get_episodes(
+        &self,
+        session_id: Option<&str>,
+        source: Option<EpisodeSource>,
+        since: Option<i64>,
+        until: Option<i64>,
+    ) -> Result<Vec<Episode>> {
+        let mut episodes = self.storage.scan_all_episodes()?;
+
+        if let Some(sid) = session_id {
+            episodes.retain(|e| e.session_id == sid);
+        }
+        if let Some(src) = source {
+            episodes.retain(|e| e.source == src);
+        }
+        if let Some(t) = since {
+            episodes.retain(|e| e.created_at >= t);
+        }
+        if let Some(t) = until {
+            episodes.retain(|e| e.created_at <= t);
+        }
+
+        episodes.sort_by_key(|e| e.created_at);
+        Ok(episodes)
+    }
+
+    /// Increment the consolidation count for an episode.
+    pub fn increment_consolidation(&mut self, episode_id: u64) -> Result<bool> {
+        if let Some(ep) = self.storage.get_episode(episode_id)? {
+            self.storage
+                .update_episode_consolidation(episode_id, ep.consolidation_count + 1)
+        } else {
+            Ok(false)
+        }
+    }
+
     // --- Stats ---
 
     /// Get summary statistics about the knowledge graph.
@@ -2613,5 +2660,84 @@ mod tests {
         assert!(hora.get_retrievability(id).is_some());
         hora.delete_entity(id).unwrap();
         assert!(hora.get_retrievability(id).is_none());
+    }
+
+    // ── Episode Management (v0.4a) ──────────────────────────
+
+    #[test]
+    fn test_get_episodes_by_session() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let e1 = hora.add_entity("node", "A", None, None).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s2", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+
+        let eps = hora.get_episodes(Some("s1"), None, None, None).unwrap();
+        assert_eq!(eps.len(), 2);
+        assert!(eps.iter().all(|e| e.session_id == "s1"));
+    }
+
+    #[test]
+    fn test_get_episodes_by_source() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let e1 = hora.add_entity("node", "A", None, None).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Document, "s1", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Api, "s1", &[e1], &[]).unwrap();
+
+        let eps = hora.get_episodes(None, Some(EpisodeSource::Document), None, None).unwrap();
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].source, EpisodeSource::Document);
+    }
+
+    #[test]
+    fn test_get_episode_by_id() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let e1 = hora.add_entity("node", "A", None, None).unwrap();
+        let ep_id = hora.add_episode(EpisodeSource::Api, "s1", &[e1], &[]).unwrap();
+
+        let ep = hora.get_episode(ep_id).unwrap().unwrap();
+        assert_eq!(ep.id, ep_id);
+        assert_eq!(ep.source, EpisodeSource::Api);
+    }
+
+    #[test]
+    fn test_consolidation_count_initial_zero() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let e1 = hora.add_entity("node", "A", None, None).unwrap();
+        let ep_id = hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+
+        let ep = hora.get_episode(ep_id).unwrap().unwrap();
+        assert_eq!(ep.consolidation_count, 0);
+    }
+
+    #[test]
+    fn test_increment_consolidation() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let e1 = hora.add_entity("node", "A", None, None).unwrap();
+        let ep_id = hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+
+        hora.increment_consolidation(ep_id).unwrap();
+        hora.increment_consolidation(ep_id).unwrap();
+
+        let ep = hora.get_episode(ep_id).unwrap().unwrap();
+        assert_eq!(ep.consolidation_count, 2);
+    }
+
+    #[test]
+    fn test_episodes_sorted_by_created_at() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let e1 = hora.add_entity("node", "A", None, None).unwrap();
+
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s2", &[e1], &[]).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s3", &[e1], &[]).unwrap();
+
+        let eps = hora.get_episodes(None, None, None, None).unwrap();
+        assert_eq!(eps.len(), 3);
+        // Should be sorted by created_at
+        for w in eps.windows(2) {
+            assert!(w[0].created_at <= w[1].created_at);
+        }
     }
 }

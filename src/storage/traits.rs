@@ -23,6 +23,8 @@ pub trait StorageOps: Send {
 
     // --- Episodes ---
     fn put_episode(&mut self, episode: Episode) -> Result<()>;
+    fn get_episode(&self, id: u64) -> Result<Option<Episode>>;
+    fn update_episode_consolidation(&mut self, id: u64, count: u32) -> Result<bool>;
 
     // --- Scan ---
     /// Return all entities in storage.

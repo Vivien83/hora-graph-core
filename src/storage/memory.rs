@@ -122,6 +122,19 @@ impl StorageOps for MemoryStorage {
         Ok(())
     }
 
+    fn get_episode(&self, id: u64) -> Result<Option<Episode>> {
+        Ok(self.episodes.iter().find(|e| e.id == id).cloned())
+    }
+
+    fn update_episode_consolidation(&mut self, id: u64, count: u32) -> Result<bool> {
+        if let Some(ep) = self.episodes.iter_mut().find(|e| e.id == id) {
+            ep.consolidation_count = count;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn stats(&self) -> StorageStats {
         StorageStats {
             entities: self.entities.len() as u64,
