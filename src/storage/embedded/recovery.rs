@@ -152,11 +152,11 @@ fn is_process_alive(_pid: u32) -> bool {
 
 // ── WAL file I/O ─────────────────────────────────────────
 
-/// Persist a WAL to disk (header + all frames).
-fn write_wal_file(path: &Path, wal: &WriteAheadLog) -> std::io::Result<()> {
+/// Persist WAL frames to disk (header + given frames).
+fn write_wal_file(path: &Path, header: &WalHeader, frames: &[WalFrame]) -> std::io::Result<()> {
     let mut file = File::create(path)?;
-    file.write_all(&wal.header().to_bytes())?;
-    for frame in wal.frames() {
+    file.write_all(&header.to_bytes())?;
+    for frame in frames {
         file.write_all(&frame.to_bytes())?;
     }
     file.sync_all()?;
@@ -369,7 +369,15 @@ impl Database {
     }
 
     /// Checkpoint: replay WAL into allocator, write everything to disk, clear WAL.
+    ///
+    /// Cannot be called during an active transaction.
     pub fn checkpoint(&mut self) -> Result<()> {
+        if self.wal.in_transaction() {
+            return Err(HoraError::InvalidFile {
+                reason: "cannot checkpoint during active transaction",
+            });
+        }
+
         // Replay WAL into allocator
         self.wal.checkpoint(&mut self.alloc);
 
@@ -393,22 +401,66 @@ impl Database {
         Ok(())
     }
 
-    /// Flush the WAL to disk without checkpointing.
+    /// Flush committed WAL frames to disk without checkpointing.
     ///
-    /// This ensures crash safety: if the process dies, the WAL file
-    /// will be replayed on next open.
+    /// Only committed frames are written. Uncommitted transaction frames
+    /// are not persisted — a crash mid-transaction is an automatic rollback.
     pub fn flush_wal(&self) -> Result<()> {
-        if self.wal.frame_count() == 0 {
+        let committed = self.wal.committed_frames();
+        if committed.is_empty() {
             return Ok(());
         }
-        write_wal_file(&wal_path(&self.path), &self.wal).map_err(|_| HoraError::InvalidFile {
-            reason: "cannot write WAL file",
+        write_wal_file(&wal_path(&self.path), self.wal.header(), committed).map_err(|_| {
+            HoraError::InvalidFile {
+                reason: "cannot write WAL file",
+            }
         })
     }
 
     /// Database file path.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    // ── Transactions ────────────────────────────────────
+
+    /// Begin a multi-statement transaction.
+    ///
+    /// Writes within a transaction are visible to the current writer but
+    /// not flushed to the WAL file until `commit()`. A crash before commit
+    /// is an automatic rollback.
+    pub fn begin_transaction(&mut self) -> Result<()> {
+        if !self.wal.begin_transaction() {
+            return Err(HoraError::InvalidFile {
+                reason: "transaction already active",
+            });
+        }
+        Ok(())
+    }
+
+    /// Commit the current transaction.
+    pub fn commit(&mut self) -> Result<()> {
+        if !self.wal.commit_transaction() {
+            return Err(HoraError::InvalidFile {
+                reason: "no active transaction to commit",
+            });
+        }
+        Ok(())
+    }
+
+    /// Rollback the current transaction, discarding all uncommitted writes.
+    pub fn rollback(&mut self) -> Result<()> {
+        if !self.wal.rollback_transaction() {
+            return Err(HoraError::InvalidFile {
+                reason: "no active transaction to rollback",
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether a transaction is currently active.
+    pub fn in_transaction(&self) -> bool {
+        self.wal.in_transaction()
     }
 
     // ── Compaction ───────────────────────────────────────
@@ -921,5 +973,145 @@ mod tests {
         }
         data_bytes.sort();
         assert_eq!(data_bytes, vec![0x51, 0x53, 0x54]);
+    }
+
+    // ── Transaction tests ────────────────────────────────
+
+    #[test]
+    fn test_database_begin_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+
+            db.begin_transaction().unwrap();
+            assert!(db.in_transaction());
+
+            let p = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+            db.alloc_mut().write_page(p).unwrap()[PAGE_HEADER_SIZE] = 0xAA;
+            let page_data = db.alloc().read_page(p).unwrap().to_vec();
+            db.write_frame(p, page_data);
+
+            db.commit().unwrap();
+            assert!(!db.in_transaction());
+
+            db.checkpoint().unwrap();
+        }
+
+        // Reopen — committed data persists
+        let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        assert_eq!(
+            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
+            0xAA
+        );
+    }
+
+    #[test]
+    fn test_database_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+
+        // Write committed data first
+        let p1 = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+        db.alloc_mut().write_page(p1).unwrap()[PAGE_HEADER_SIZE] = 0x11;
+        let data1 = db.alloc().read_page(p1).unwrap().to_vec();
+        db.write_frame(p1, data1);
+        db.checkpoint().unwrap();
+
+        // Begin transaction, write, rollback
+        db.begin_transaction().unwrap();
+        let p2 = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+        db.alloc_mut().write_page(p2).unwrap()[PAGE_HEADER_SIZE] = 0x22;
+        let data2 = db.alloc().read_page(p2).unwrap().to_vec();
+        db.write_frame(p2, data2);
+
+        db.rollback().unwrap();
+
+        // Page 2's WAL frame is gone
+        assert!(db.wal().read_page(p2).is_none());
+    }
+
+    #[test]
+    fn test_checkpoint_blocked_during_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        db.begin_transaction().unwrap();
+
+        let result = db.checkpoint();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_flush_only_committed_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+
+            // Write committed data
+            let p1 = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+            db.alloc_mut().write_page(p1).unwrap()[PAGE_HEADER_SIZE] = 0xAA;
+            let data1 = db.alloc().read_page(p1).unwrap().to_vec();
+            db.write_frame(p1, data1);
+
+            // Begin transaction, write uncommitted data
+            db.begin_transaction().unwrap();
+            let p2 = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+            db.alloc_mut().write_page(p2).unwrap()[PAGE_HEADER_SIZE] = 0xBB;
+            let data2 = db.alloc().read_page(p2).unwrap().to_vec();
+            db.write_frame(p2, data2);
+
+            // Flush WAL (only committed frames should be written)
+            db.flush_wal().unwrap();
+            // Simulate crash (don't commit, don't checkpoint)
+        }
+
+        // Reopen — only committed frame should be recovered
+        let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        assert_eq!(
+            db2.alloc().read_page(1).unwrap()[PAGE_HEADER_SIZE],
+            0xAA
+        );
+        // Page 2 should NOT have uncommitted data
+        if db2.alloc().page_count() > 2 {
+            assert_ne!(
+                db2.alloc().read_page(2).unwrap()[PAGE_HEADER_SIZE],
+                0xBB
+            );
+        }
+    }
+
+    #[test]
+    fn test_nested_transaction_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        db.begin_transaction().unwrap();
+        assert!(db.begin_transaction().is_err());
+    }
+
+    #[test]
+    fn test_commit_without_transaction_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        assert!(db.commit().is_err());
+    }
+
+    #[test]
+    fn test_rollback_without_transaction_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        assert!(db.rollback().is_err());
     }
 }

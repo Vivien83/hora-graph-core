@@ -172,6 +172,10 @@ pub struct WriteAheadLog {
     index: HashMap<u32, usize>,
     /// Auto-checkpoint threshold.
     auto_checkpoint_threshold: usize,
+    /// Number of committed frames (0..committed_count are durable).
+    committed_count: usize,
+    /// Savepoint: frame count when transaction began. None = no active transaction.
+    savepoint: Option<usize>,
 }
 
 impl WriteAheadLog {
@@ -182,6 +186,8 @@ impl WriteAheadLog {
             frames: Vec::new(),
             index: HashMap::new(),
             auto_checkpoint_threshold: DEFAULT_AUTO_CHECKPOINT,
+            committed_count: 0,
+            savepoint: None,
         }
     }
 
@@ -220,14 +226,68 @@ impl WriteAheadLog {
         self.frames.push(frame);
         self.index.insert(page_number, idx);
 
-        self.auto_checkpoint_threshold > 0 && self.frames.len() >= self.auto_checkpoint_threshold
+        // Auto-commit when not in a transaction
+        if self.savepoint.is_none() {
+            self.committed_count = self.frames.len();
+        }
+
+        self.auto_checkpoint_threshold > 0 && self.committed_count >= self.auto_checkpoint_threshold
     }
 
     /// Read a page from the WAL. Returns None if the page is not in the WAL.
+    ///
+    /// Returns the latest write (including uncommitted transaction data for the
+    /// current writer).
     pub fn read_page(&self, page_number: u32) -> Option<&[u8]> {
         self.index
             .get(&page_number)
             .map(|&idx| self.frames[idx].data.as_slice())
+    }
+
+    // ── Transactions ──────────────────────────────────────
+
+    /// Begin a transaction. Returns false if already in a transaction (no nesting).
+    pub fn begin_transaction(&mut self) -> bool {
+        if self.savepoint.is_some() {
+            return false;
+        }
+        self.savepoint = Some(self.frames.len());
+        true
+    }
+
+    /// Commit the current transaction. Returns false if not in a transaction.
+    pub fn commit_transaction(&mut self) -> bool {
+        if self.savepoint.is_none() {
+            return false;
+        }
+        self.committed_count = self.frames.len();
+        self.savepoint = None;
+        true
+    }
+
+    /// Rollback the current transaction. Returns false if not in a transaction.
+    pub fn rollback_transaction(&mut self) -> bool {
+        let savepoint = match self.savepoint.take() {
+            Some(sp) => sp,
+            None => return false,
+        };
+        self.frames.truncate(savepoint);
+        // Rebuild index for remaining frames
+        self.index.clear();
+        for (i, frame) in self.frames.iter().enumerate() {
+            self.index.insert(frame.page_number, i);
+        }
+        true
+    }
+
+    /// Whether a transaction is currently active.
+    pub fn in_transaction(&self) -> bool {
+        self.savepoint.is_some()
+    }
+
+    /// Access only the committed frames (for flushing to disk).
+    pub fn committed_frames(&self) -> &[WalFrame] {
+        &self.frames[..self.committed_count]
     }
 
     /// Checkpoint: replay all valid WAL frames into the PageAllocator, then clear.
@@ -235,6 +295,11 @@ impl WriteAheadLog {
     /// Frames with bad checksums or mismatched salt are skipped.
     /// Returns the number of pages written to the allocator.
     pub fn checkpoint(&mut self, alloc: &mut PageAllocator) -> usize {
+        // Cannot checkpoint during an active transaction
+        if self.savepoint.is_some() {
+            return 0;
+        }
+
         let mut written = 0;
 
         // Process frames in order (last write to each page wins via the alloc)
@@ -266,6 +331,7 @@ impl WriteAheadLog {
         // Clear the WAL and rotate salt
         self.frames.clear();
         self.index.clear();
+        self.committed_count = 0;
         self.header.checkpoint_seq += 1;
         self.header.salt = WalHeader::generate_salt(self.header.checkpoint_seq);
 
@@ -496,5 +562,120 @@ mod tests {
         assert!(alloc.page_count() > 5);
         let p5 = alloc.read_page(5).unwrap();
         assert_eq!(p5[PAGE_HEADER_SIZE], 0xEE);
+    }
+
+    // ── Transaction tests ────────────────────────────────
+
+    #[test]
+    fn test_begin_commit_transaction() {
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+
+        assert!(wal.begin_transaction());
+        assert!(wal.in_transaction());
+
+        wal.write_frame(1, 5, make_page_data(0x01));
+        wal.write_frame(2, 5, make_page_data(0x02));
+
+        // Uncommitted: committed_count still 0
+        assert_eq!(wal.committed_frames().len(), 0);
+        assert_eq!(wal.frame_count(), 2);
+
+        // Writer can still read uncommitted data
+        assert_eq!(wal.read_page(1).unwrap()[PAGE_HEADER_SIZE], 0x01);
+
+        assert!(wal.commit_transaction());
+        assert!(!wal.in_transaction());
+        assert_eq!(wal.committed_frames().len(), 2);
+    }
+
+    #[test]
+    fn test_rollback_transaction() {
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+
+        // Write a committed frame first (outside transaction)
+        wal.write_frame(1, 5, make_page_data(0xAA));
+        assert_eq!(wal.committed_frames().len(), 1);
+
+        // Begin transaction, write, rollback
+        assert!(wal.begin_transaction());
+        wal.write_frame(2, 5, make_page_data(0xBB));
+        wal.write_frame(1, 5, make_page_data(0xCC)); // overwrite page 1
+
+        assert_eq!(wal.frame_count(), 3);
+        // Read sees uncommitted overwrite
+        assert_eq!(wal.read_page(1).unwrap()[PAGE_HEADER_SIZE], 0xCC);
+
+        assert!(wal.rollback_transaction());
+        assert!(!wal.in_transaction());
+
+        // Back to 1 committed frame
+        assert_eq!(wal.frame_count(), 1);
+        assert_eq!(wal.committed_frames().len(), 1);
+        // Page 1 back to original
+        assert_eq!(wal.read_page(1).unwrap()[PAGE_HEADER_SIZE], 0xAA);
+        // Page 2 gone
+        assert!(wal.read_page(2).is_none());
+    }
+
+    #[test]
+    fn test_nested_transaction_rejected() {
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+        assert!(wal.begin_transaction());
+        assert!(!wal.begin_transaction()); // nested → rejected
+    }
+
+    #[test]
+    fn test_commit_without_transaction_rejected() {
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+        assert!(!wal.commit_transaction());
+    }
+
+    #[test]
+    fn test_rollback_without_transaction_rejected() {
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+        assert!(!wal.rollback_transaction());
+    }
+
+    #[test]
+    fn test_auto_commit_without_transaction() {
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+        wal.write_frame(1, 5, make_page_data(0x01));
+        wal.write_frame(2, 5, make_page_data(0x02));
+
+        // Without transaction, every write auto-commits
+        assert_eq!(wal.committed_frames().len(), 2);
+        assert_eq!(wal.frame_count(), 2);
+    }
+
+    #[test]
+    fn test_checkpoint_blocked_during_transaction() {
+        let mut alloc = PageAllocator::new(DEFAULT_PAGE_SIZE);
+        alloc.alloc_page(PageType::EntityLeaf);
+
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+        wal.begin_transaction();
+        wal.write_frame(1, 2, make_page_data(0x01));
+
+        // Checkpoint returns 0 (blocked)
+        let written = wal.checkpoint(&mut alloc);
+        assert_eq!(written, 0);
+        // Frames still there
+        assert_eq!(wal.frame_count(), 1);
+    }
+
+    #[test]
+    fn test_auto_checkpoint_skipped_in_transaction() {
+        let mut wal = WriteAheadLog::new(DEFAULT_PAGE_SIZE as u32);
+        wal.set_auto_checkpoint(2);
+
+        // In transaction: committed_count stays 0, threshold not reached
+        wal.begin_transaction();
+        assert!(!wal.write_frame(1, 5, make_page_data(0x01)));
+        assert!(!wal.write_frame(2, 5, make_page_data(0x02)));
+        // 2 frames but 0 committed → no signal
+        wal.commit_transaction();
+
+        // Next write outside transaction: committed_count = 3 >= 2 → signal
+        assert!(wal.write_frame(3, 5, make_page_data(0x03)));
     }
 }
