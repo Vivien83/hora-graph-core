@@ -184,8 +184,15 @@ pub struct StorageStats {
 
 /// Current time in epoch milliseconds.
 pub(crate) fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_millis() as i64
+    #[cfg(not(feature = "wasm"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_millis() as i64
+    }
+    #[cfg(feature = "wasm")]
+    {
+        js_sys::Date::now() as i64
+    }
 }
