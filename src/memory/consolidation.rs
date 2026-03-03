@@ -11,6 +11,10 @@
 //! CLS Transfer — McClelland et al. 1995, Kumaran et al. 2016.
 //! Complementary Learning Systems: recurring episodic patterns are
 //! extracted into semantic facts (neocortical consolidation).
+//!
+//! Memory Linking — Zeithamova & Preston 2010, Schlichting et al. 2015.
+//! Entities created within a temporal window are linked, reflecting
+//! hippocampal binding of co-occurring experiences.
 
 /// Default SHY downscaling factor (≈22% reduction per cycle).
 pub const DEFAULT_SHY_FACTOR: f64 = 0.78;
@@ -24,6 +28,9 @@ pub const DEFAULT_MAX_REPLAY: usize = 100;
 /// Default CLS transfer threshold (minimum consolidation_count to consider).
 pub const DEFAULT_CLS_THRESHOLD: u32 = 3;
 
+/// Default temporal window for memory linking (6 hours in milliseconds).
+pub const DEFAULT_LINKING_WINDOW_MS: i64 = 6 * 3600 * 1000;
+
 /// Parameters for the consolidation cycle.
 #[derive(Debug, Clone)]
 pub struct ConsolidationParams {
@@ -35,6 +42,8 @@ pub struct ConsolidationParams {
     pub max_replay_items: usize,
     /// Minimum consolidation_count for CLS transfer eligibility (default 3).
     pub cls_threshold: u32,
+    /// Temporal window for memory linking in milliseconds (default 6h).
+    pub linking_window_ms: i64,
 }
 
 impl Default for ConsolidationParams {
@@ -44,6 +53,7 @@ impl Default for ConsolidationParams {
             recent_ratio: DEFAULT_RECENT_RATIO,
             max_replay_items: DEFAULT_MAX_REPLAY,
             cls_threshold: DEFAULT_CLS_THRESHOLD,
+            linking_window_ms: DEFAULT_LINKING_WINDOW_MS,
         }
     }
 }
@@ -66,4 +76,13 @@ pub struct ClsStats {
     pub facts_created: usize,
     /// Number of existing semantic facts reinforced (confidence bumped).
     pub facts_reinforced: usize,
+}
+
+/// Statistics returned by memory_linking().
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkingStats {
+    /// Number of new temporal links created (each direction counts as one).
+    pub links_created: usize,
+    /// Number of existing temporal links reinforced.
+    pub links_reinforced: usize,
 }

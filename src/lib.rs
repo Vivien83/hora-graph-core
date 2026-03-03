@@ -15,7 +15,7 @@ pub use crate::error::{HoraError, Result};
 pub use crate::memory::dark_nodes::DarkNodeParams;
 pub use crate::memory::fsrs::FsrsParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
-pub use crate::memory::consolidation::{ClsStats, ConsolidationParams, ReplayStats};
+pub use crate::memory::consolidation::{ClsStats, ConsolidationParams, LinkingStats, ReplayStats};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
@@ -1021,6 +1021,111 @@ impl HoraCore {
             episodes_processed,
             facts_created,
             facts_reinforced,
+        })
+    }
+
+    /// Memory linking: create temporal links between entities co-created within a time window.
+    ///
+    /// Scans all entities sorted by `created_at`. For each pair within `linking_window_ms`
+    /// (default 6h), creates bidirectional "temporally_linked" edges (A→B and B→A).
+    /// If the link already exists, reinforces its confidence (+0.1, capped at 1.0).
+    pub fn memory_linking(&mut self) -> Result<LinkingStats> {
+        let window = self.consolidation_params.linking_window_ms;
+        let mut entities = self.storage.scan_all_entities()?;
+
+        if entities.len() < 2 {
+            return Ok(LinkingStats {
+                links_created: 0,
+                links_reinforced: 0,
+            });
+        }
+
+        entities.sort_by_key(|e| e.created_at);
+
+        // Collect existing "temporally_linked" edges into a lookup set
+        let all_edges = self.storage.scan_all_edges()?;
+        let mut existing_links: HashMap<(EntityId, EntityId), EdgeId> = HashMap::new();
+        for edge in &all_edges {
+            if edge.relation_type == "temporally_linked" && edge.invalid_at == 0 {
+                existing_links.insert((edge.source, edge.target), edge.id);
+            }
+        }
+
+        let mut links_created = 0_usize;
+        let mut links_reinforced = 0_usize;
+
+        // Sliding window: for each entity, pair with subsequent entities within window
+        for i in 0..entities.len() {
+            for j in (i + 1)..entities.len() {
+                let delta = entities[j].created_at - entities[i].created_at;
+                if delta >= window {
+                    break; // sorted, so all further j will also exceed window
+                }
+
+                let a = entities[i].id;
+                let b = entities[j].id;
+
+                // Direction A→B
+                if let Some(&edge_id) = existing_links.get(&(a, b)) {
+                    if let Some(edge) = self.storage.get_edge(edge_id)? {
+                        let new_conf = (edge.confidence + 0.1).min(1.0);
+                        self.storage.put_edge(Edge {
+                            confidence: new_conf,
+                            ..edge
+                        })?;
+                        links_reinforced += 1;
+                    }
+                } else {
+                    let id = EdgeId(self.next_edge_id);
+                    self.next_edge_id += 1;
+                    let now = crate::core::types::now_millis();
+                    self.storage.put_edge(Edge {
+                        id,
+                        source: a,
+                        target: b,
+                        relation_type: "temporally_linked".to_string(),
+                        description: String::new(),
+                        confidence: 0.5,
+                        valid_at: now,
+                        invalid_at: 0,
+                        created_at: now,
+                    })?;
+                    links_created += 1;
+                }
+
+                // Direction B→A
+                if let Some(&edge_id) = existing_links.get(&(b, a)) {
+                    if let Some(edge) = self.storage.get_edge(edge_id)? {
+                        let new_conf = (edge.confidence + 0.1).min(1.0);
+                        self.storage.put_edge(Edge {
+                            confidence: new_conf,
+                            ..edge
+                        })?;
+                        links_reinforced += 1;
+                    }
+                } else {
+                    let id = EdgeId(self.next_edge_id);
+                    self.next_edge_id += 1;
+                    let now = crate::core::types::now_millis();
+                    self.storage.put_edge(Edge {
+                        id,
+                        source: b,
+                        target: a,
+                        relation_type: "temporally_linked".to_string(),
+                        description: String::new(),
+                        confidence: 0.5,
+                        valid_at: now,
+                        invalid_at: 0,
+                        created_at: now,
+                    })?;
+                    links_created += 1;
+                }
+            }
+        }
+
+        Ok(LinkingStats {
+            links_created,
+            links_reinforced,
         })
     }
 
@@ -3195,6 +3300,70 @@ mod tests {
         let after = hora.get_episode(ep).unwrap().unwrap().consolidation_count;
 
         assert_eq!(after, before + 1);
+    }
+
+    // --- Memory Linking ---
+
+    #[test]
+    fn test_memory_linking_creates_bidirectional_links() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        // Entities created in quick succession → within any reasonable window
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+
+        let stats = hora.memory_linking().unwrap();
+        // A→B and B→A
+        assert_eq!(stats.links_created, 2);
+        assert_eq!(stats.links_reinforced, 0);
+
+        // Verify edges exist
+        let edges_a = hora.get_entity_facts(a).unwrap();
+        assert!(edges_a.iter().any(|e| e.target == b && e.relation_type == "temporally_linked"));
+        let edges_b = hora.get_entity_facts(b).unwrap();
+        assert!(edges_b.iter().any(|e| e.target == a && e.relation_type == "temporally_linked"));
+    }
+
+    #[test]
+    fn test_memory_linking_outside_window_no_link() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        // Set window to 0ms → no entities can be within window
+        hora.consolidation_params.linking_window_ms = 0;
+
+        let _a = hora.add_entity("node", "A", None, None).unwrap();
+        let _b = hora.add_entity("node", "B", None, None).unwrap();
+
+        let stats = hora.memory_linking().unwrap();
+        assert_eq!(stats.links_created, 0);
+    }
+
+    #[test]
+    fn test_memory_linking_reinforces_existing() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let _a = hora.add_entity("node", "A", None, None).unwrap();
+        let _b = hora.add_entity("node", "B", None, None).unwrap();
+
+        // First pass: create links
+        let stats1 = hora.memory_linking().unwrap();
+        assert_eq!(stats1.links_created, 2);
+
+        // Second pass: reinforce (same entities, links already exist)
+        let stats2 = hora.memory_linking().unwrap();
+        assert_eq!(stats2.links_created, 0);
+        assert_eq!(stats2.links_reinforced, 2);
+    }
+
+    #[test]
+    fn test_memory_linking_combinatoric() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        // Create 4 entities in quick succession (all within window)
+        hora.add_entity("node", "A", None, None).unwrap();
+        hora.add_entity("node", "B", None, None).unwrap();
+        hora.add_entity("node", "C", None, None).unwrap();
+        hora.add_entity("node", "D", None, None).unwrap();
+
+        let stats = hora.memory_linking().unwrap();
+        // 4 entities → C(4,2) = 6 pairs × 2 directions = 12 links
+        assert_eq!(stats.links_created, 12);
     }
 
     #[test]
