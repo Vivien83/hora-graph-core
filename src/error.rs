@@ -34,6 +34,10 @@ pub enum HoraError {
         got: usize,
     },
     StorageFull,
+
+    // SQLite backend
+    #[cfg(feature = "sqlite")]
+    Sqlite(String),
 }
 
 impl fmt::Display for HoraError {
@@ -61,6 +65,8 @@ impl fmt::Display for HoraError {
                 write!(f, "string too long: max {} bytes, got {}", max, got)
             }
             Self::StorageFull => write!(f, "storage is full"),
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(msg) => write!(f, "SQLite error: {}", msg),
         }
     }
 }

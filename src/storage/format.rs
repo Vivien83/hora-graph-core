@@ -146,7 +146,7 @@ fn read_property_value(r: &mut impl Read) -> io::Result<PropertyValue> {
     }
 }
 
-fn write_properties(w: &mut impl Write, props: &Properties) -> io::Result<()> {
+pub(crate) fn write_properties(w: &mut impl Write, props: &Properties) -> io::Result<()> {
     write_u32(w, props.len() as u32)?;
     for (key, val) in props {
         write_str(w, key)?;
@@ -155,7 +155,7 @@ fn write_properties(w: &mut impl Write, props: &Properties) -> io::Result<()> {
     Ok(())
 }
 
-fn read_properties(r: &mut impl Read) -> io::Result<Properties> {
+pub(crate) fn read_properties(r: &mut impl Read) -> io::Result<Properties> {
     let count = read_u32(r)? as usize;
     let mut map = Properties::with_capacity(count);
     for _ in 0..count {
