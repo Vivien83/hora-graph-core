@@ -38,6 +38,10 @@ pub enum HoraError {
     // SQLite backend
     #[cfg(feature = "sqlite")]
     Sqlite(String),
+
+    // PostgreSQL backend
+    #[cfg(feature = "postgres")]
+    Postgres(String),
 }
 
 impl fmt::Display for HoraError {
@@ -67,6 +71,8 @@ impl fmt::Display for HoraError {
             Self::StorageFull => write!(f, "storage is full"),
             #[cfg(feature = "sqlite")]
             Self::Sqlite(msg) => write!(f, "SQLite error: {}", msg),
+            #[cfg(feature = "postgres")]
+            Self::Postgres(msg) => write!(f, "PostgreSQL error: {}", msg),
         }
     }
 }
