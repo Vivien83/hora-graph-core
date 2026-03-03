@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "hora-graph-core"
-version = "0.1.0"
-description = "Bio-inspired embedded knowledge graph engine"
+version = "1.0.0"
+description = "Bio-inspired embedded knowledge graph engine — pure Rust, zero runtime deps"
 requires-python = ">=3.9"
 
 [tool.maturin]

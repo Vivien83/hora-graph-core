@@ -1,10 +1,14 @@
 [package]
 name = "hora-graph-core"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
-description = "Bio-inspired embedded knowledge graph engine"
+description = "Bio-inspired embedded knowledge graph engine — pure Rust, zero runtime deps"
 license = "MIT OR Apache-2.0"
 rust-version = "1.70"
+repository = "https://github.com/Vivien83/hora-graph-core"
+homepage = "https://github.com/Vivien83/hora-graph-core"
+keywords = ["knowledge-graph", "graph-database", "memory", "embedded", "vector-search"]
+categories = ["database", "data-structures", "science"]
 
 [features]
 default = ["embedded"]
