@@ -341,6 +341,75 @@ impl PageAllocator {
         Ok(stored == computed)
     }
 
+    // ── Compaction ─────────────────────────────────────────
+
+    /// Compact: relocate pages from the tail into free slots, then truncate.
+    ///
+    /// Two-pointer algorithm: `dst` scans forward for free slots, `src` scans
+    /// backward for used pages. Pages are swapped, then trailing free pages
+    /// are truncated. The freelist is reset (no free pages remain).
+    ///
+    /// Returns a list of relocations `(old_page, new_page)` so the caller
+    /// can update any external references (e.g., B+ tree pointers).
+    pub fn compact(&mut self) -> Vec<(u32, u32)> {
+        let mut relocations = Vec::new();
+        if self.pages.len() <= 1 {
+            return relocations;
+        }
+
+        // Identify free pages by scanning headers
+        let mut is_free = vec![false; self.pages.len()];
+        for (i, free) in is_free.iter_mut().enumerate().skip(1) {
+            if let Some(hdr) = PageHeader::read_from(&self.pages[i]) {
+                *free = hdr.page_type == PageType::Free;
+            }
+        }
+
+        // Two-pointer: fill holes from front with pages from back
+        let mut dst = 1; // skip header page 0
+        let mut src = self.pages.len() - 1;
+
+        while dst < src {
+            if !is_free[dst] {
+                dst += 1;
+                continue;
+            }
+            if is_free[src] {
+                src -= 1;
+                continue;
+            }
+
+            // Swap used page from src into free slot at dst
+            self.pages.swap(dst, src);
+            is_free[dst] = false;
+            is_free[src] = true;
+            relocations.push((src as u32, dst as u32));
+
+            dst += 1;
+            src -= 1;
+        }
+
+        // Truncate trailing free pages
+        let mut new_len = self.pages.len();
+        while new_len > 1 && is_free[new_len - 1] {
+            new_len -= 1;
+        }
+        self.pages.truncate(new_len);
+
+        // Freelist is now empty (all holes filled and truncated)
+        self.freelist_head = 0;
+        self.freelist_count = 0;
+
+        relocations
+    }
+
+    /// Append a raw page (for full vacuum rebuild). Returns the page number.
+    pub fn push_raw_page(&mut self, data: Vec<u8>) -> u32 {
+        let num = self.pages.len() as u32;
+        self.pages.push(data);
+        num
+    }
+
     // ── Freelist internals ────────────────────────────────
 
     /// Pop one page number from the freelist. Returns None if empty.
@@ -571,5 +640,82 @@ mod tests {
     fn test_usable_bytes() {
         assert_eq!(usable_bytes(4096), 4088);
         assert_eq!(usable_bytes(8192), 8184);
+    }
+
+    #[test]
+    fn test_compact_removes_free_pages() {
+        let mut alloc = PageAllocator::new(DEFAULT_PAGE_SIZE);
+        for _ in 0..5 {
+            alloc.alloc_page(PageType::EntityLeaf);
+        }
+        assert_eq!(alloc.page_count(), 6); // header + 5
+
+        // Free pages 2 and 4 (creating holes)
+        alloc.free_page(2).unwrap();
+        alloc.free_page(4).unwrap();
+        assert_eq!(alloc.freelist_count(), 2);
+
+        let relocations = alloc.compact();
+        // 2 holes filled, trailing pages truncated
+        assert_eq!(alloc.page_count(), 4); // header + 3 used
+        assert_eq!(alloc.freelist_count(), 0);
+        assert!(!relocations.is_empty());
+    }
+
+    #[test]
+    fn test_compact_preserves_data() {
+        let mut alloc = PageAllocator::new(DEFAULT_PAGE_SIZE);
+
+        // Alloc 4 pages with recognizable data
+        let p1 = alloc.alloc_page(PageType::EntityLeaf);
+        alloc.write_page(p1).unwrap()[PAGE_HEADER_SIZE] = 0xAA;
+        let p2 = alloc.alloc_page(PageType::EdgeData);
+        alloc.write_page(p2).unwrap()[PAGE_HEADER_SIZE] = 0xBB;
+        let p3 = alloc.alloc_page(PageType::VectorData);
+        alloc.write_page(p3).unwrap()[PAGE_HEADER_SIZE] = 0xCC;
+        let p4 = alloc.alloc_page(PageType::StringPool);
+        alloc.write_page(p4).unwrap()[PAGE_HEADER_SIZE] = 0xDD;
+
+        // Free p2 (hole in the middle)
+        alloc.free_page(p2).unwrap();
+
+        let relocations = alloc.compact();
+
+        // p4 (last used) should have moved to p2's slot
+        assert_eq!(alloc.page_count(), 4); // header + 3 used
+
+        // Collect all data bytes from surviving pages
+        let mut data_bytes: Vec<u8> = Vec::new();
+        for i in 1..alloc.page_count() {
+            data_bytes.push(alloc.read_page(i).unwrap()[PAGE_HEADER_SIZE]);
+        }
+        data_bytes.sort();
+        // All original data should be present (except freed page 0xBB)
+        assert_eq!(data_bytes, vec![0xAA, 0xCC, 0xDD]);
+        assert_eq!(relocations.len(), 1);
+    }
+
+    #[test]
+    fn test_compact_no_free_pages() {
+        let mut alloc = PageAllocator::new(DEFAULT_PAGE_SIZE);
+        for _ in 0..3 {
+            alloc.alloc_page(PageType::EntityLeaf);
+        }
+        let relocations = alloc.compact();
+        assert!(relocations.is_empty());
+        assert_eq!(alloc.page_count(), 4);
+    }
+
+    #[test]
+    fn test_compact_all_free() {
+        let mut alloc = PageAllocator::new(DEFAULT_PAGE_SIZE);
+        let p1 = alloc.alloc_page(PageType::EntityLeaf);
+        let p2 = alloc.alloc_page(PageType::EntityLeaf);
+        alloc.free_page(p1).unwrap();
+        alloc.free_page(p2).unwrap();
+
+        alloc.compact();
+        assert_eq!(alloc.page_count(), 1); // only header remains
+        assert_eq!(alloc.freelist_count(), 0);
     }
 }

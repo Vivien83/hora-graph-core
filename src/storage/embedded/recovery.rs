@@ -410,6 +410,114 @@ impl Database {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    // ── Compaction ───────────────────────────────────────
+
+    /// Incremental compact: fill holes, truncate trailing free pages.
+    ///
+    /// 1. Checkpoints pending WAL
+    /// 2. Two-pointer compaction on the allocator
+    /// 3. Persists to disk
+    ///
+    /// Returns stats including relocations for updating external references.
+    pub fn compact(&mut self) -> Result<CompactStats> {
+        self.checkpoint()?;
+
+        let old_count = self.alloc.page_count();
+        let relocations = self.alloc.compact();
+        let new_count = self.alloc.page_count();
+
+        // Update file header
+        let fh = FileHeader {
+            page_count: new_count,
+            freelist_page: self.alloc.freelist_head(),
+            freelist_count: self.alloc.freelist_count(),
+            ..FileHeader::new(self.alloc.page_size() as u32)
+        };
+        fh.write_to(self.alloc.write_page(0)?);
+
+        write_pages_to_file(&self.alloc, &self.path).map_err(|_| HoraError::InvalidFile {
+            reason: "cannot write database file during compact",
+        })?;
+
+        Ok(CompactStats {
+            pages_relocated: relocations.len(),
+            pages_freed: (old_count - new_count) as usize,
+            old_page_count: old_count,
+            new_page_count: new_count,
+            relocations,
+        })
+    }
+
+    /// Full vacuum: rebuild into a new file, then atomic rename.
+    ///
+    /// Copies all non-free pages contiguously into `.hora.tmp`, then
+    /// renames over the original. Safe against crashes (original stays
+    /// intact until rename succeeds).
+    pub fn full_vacuum(&mut self) -> Result<CompactStats> {
+        self.checkpoint()?;
+
+        let old_count = self.alloc.page_count();
+        let page_size = self.alloc.page_size();
+        let mut new_alloc = PageAllocator::new(page_size);
+        let mut relocations = Vec::new();
+
+        for old_num in 1..old_count {
+            let page_data = self.alloc.read_page(old_num)?;
+            if let Some(hdr) = super::page::PageHeader::read_from(page_data) {
+                if hdr.page_type == PageType::Free {
+                    continue;
+                }
+            }
+            let new_num = new_alloc.push_raw_page(page_data.to_vec());
+            if old_num != new_num {
+                relocations.push((old_num, new_num));
+            }
+        }
+
+        // Write file header into page 0
+        let fh = FileHeader {
+            page_count: new_alloc.page_count(),
+            ..FileHeader::new(page_size as u32)
+        };
+        fh.write_to(new_alloc.write_page(0)?);
+
+        // Write to temp file
+        let tmp_path = self.path.with_extension("tmp");
+        write_pages_to_file(&new_alloc, &tmp_path).map_err(|_| HoraError::InvalidFile {
+            reason: "cannot write temp file during full vacuum",
+        })?;
+
+        // Atomic rename
+        std::fs::rename(&tmp_path, &self.path).map_err(|_| HoraError::InvalidFile {
+            reason: "cannot rename temp file during full vacuum",
+        })?;
+
+        let new_count = new_alloc.page_count();
+        self.alloc = new_alloc;
+
+        Ok(CompactStats {
+            pages_relocated: relocations.len(),
+            pages_freed: (old_count - new_count) as usize,
+            old_page_count: old_count,
+            new_page_count: new_count,
+            relocations,
+        })
+    }
+}
+
+/// Statistics from a compaction operation.
+pub struct CompactStats {
+    /// Number of pages that were moved to a new location.
+    pub pages_relocated: usize,
+    /// Number of free pages removed (old_count - new_count).
+    pub pages_freed: usize,
+    /// Page count before compaction.
+    pub old_page_count: u32,
+    /// Page count after compaction.
+    pub new_page_count: u32,
+    /// List of (old_page, new_page) relocations.
+    pub relocations: Vec<(u32, u32)>,
 }
 
 impl Drop for Database {
@@ -720,5 +828,98 @@ mod tests {
         // read_page should return WAL version
         let read = db.read_page(p).unwrap();
         assert_eq!(read[PAGE_HEADER_SIZE], 0x02);
+    }
+
+    #[test]
+    fn test_database_compact_reduces_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+
+            // Alloc 6 pages with data
+            for i in 0u8..6 {
+                let p = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+                db.alloc_mut().write_page(p).unwrap()[PAGE_HEADER_SIZE] = 0x10 + i;
+            }
+            // Free pages 2 and 4 (50% holes in the middle)
+            db.alloc_mut().free_page(2).unwrap();
+            db.alloc_mut().free_page(4).unwrap();
+
+            let stats = db.compact().unwrap();
+            assert!(stats.pages_freed > 0);
+            assert!(stats.new_page_count < stats.old_page_count);
+            assert_eq!(db.alloc().freelist_count(), 0);
+        }
+
+        // Reopen — should still be valid
+        let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        assert_eq!(db2.alloc().page_count(), 5); // header + 4 used
+    }
+
+    #[test]
+    fn test_database_compact_data_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+
+            let p1 = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+            db.alloc_mut().write_page(p1).unwrap()[PAGE_HEADER_SIZE] = 0xAA;
+            let p2 = db.alloc_mut().alloc_page(PageType::EdgeData);
+            db.alloc_mut().write_page(p2).unwrap()[PAGE_HEADER_SIZE] = 0xBB;
+            let p3 = db.alloc_mut().alloc_page(PageType::VectorData);
+            db.alloc_mut().write_page(p3).unwrap()[PAGE_HEADER_SIZE] = 0xCC;
+
+            // Free p2 (middle hole)
+            db.alloc_mut().free_page(p2).unwrap();
+            db.compact().unwrap();
+        }
+
+        // Reopen and verify all surviving data
+        let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        let mut data_bytes: Vec<u8> = Vec::new();
+        for i in 1..db2.alloc().page_count() {
+            data_bytes.push(db2.alloc().read_page(i).unwrap()[PAGE_HEADER_SIZE]);
+        }
+        data_bytes.sort();
+        assert_eq!(data_bytes, vec![0xAA, 0xCC]);
+    }
+
+    #[test]
+    fn test_database_full_vacuum() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        {
+            let mut db = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+
+            for i in 0u8..5 {
+                let p = db.alloc_mut().alloc_page(PageType::EntityLeaf);
+                db.alloc_mut().write_page(p).unwrap()[PAGE_HEADER_SIZE] = 0x50 + i;
+            }
+            // Free pages 1, 3 (scattered holes)
+            db.alloc_mut().free_page(1).unwrap();
+            db.alloc_mut().free_page(3).unwrap();
+
+            let stats = db.full_vacuum().unwrap();
+            assert_eq!(stats.pages_freed, 2);
+            assert_eq!(stats.new_page_count, 4); // header + 3 used
+            assert_eq!(db.alloc().freelist_count(), 0);
+        }
+
+        // Reopen after full vacuum
+        let db2 = Database::open(&path, DEFAULT_PAGE_SIZE).unwrap();
+        assert_eq!(db2.alloc().page_count(), 4);
+
+        // Verify data (3 surviving pages)
+        let mut data_bytes: Vec<u8> = Vec::new();
+        for i in 1..db2.alloc().page_count() {
+            data_bytes.push(db2.alloc().read_page(i).unwrap()[PAGE_HEADER_SIZE]);
+        }
+        data_bytes.sort();
+        assert_eq!(data_bytes, vec![0x51, 0x53, 0x54]);
     }
 }
