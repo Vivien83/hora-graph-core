@@ -62,7 +62,7 @@ fn bench_bfs(c: &mut Criterion) {
     for depth in [1, 2, 3] {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             b.iter(|| {
-                hora.traverse(start, TraverseOpts { depth }).unwrap();
+                let _ = hora.traverse(start, TraverseOpts { depth }).unwrap();
             });
         });
     }
