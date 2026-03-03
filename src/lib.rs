@@ -15,7 +15,9 @@ pub use crate::error::{HoraError, Result};
 pub use crate::memory::dark_nodes::DarkNodeParams;
 pub use crate::memory::fsrs::FsrsParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
-pub use crate::memory::consolidation::{ClsStats, ConsolidationParams, LinkingStats, ReplayStats};
+pub use crate::memory::consolidation::{
+    ClsStats, ConsolidationParams, DreamCycleConfig, DreamCycleStats, LinkingStats, ReplayStats,
+};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
@@ -1126,6 +1128,85 @@ impl HoraCore {
         Ok(LinkingStats {
             links_created,
             links_reinforced,
+        })
+    }
+
+    /// Run a full dream cycle: the 6-step consolidation pipeline.
+    ///
+    /// Steps (in order):
+    /// 1. **SHY downscaling** — reduce all activation scores
+    /// 2. **Interleaved replay** — reactivate entities from mixed episodes
+    /// 3. **CLS transfer** — extract recurring patterns into semantic facts
+    /// 4. **Memory linking** — create temporal co-creation edges
+    /// 5. **Dark check** — silence low-activation entities
+    /// 6. **GC** (optional) — delete GC-eligible dark entities
+    ///
+    /// Each step can be enabled/disabled via `DreamCycleConfig`.
+    pub fn dream_cycle(&mut self, config: &DreamCycleConfig) -> Result<DreamCycleStats> {
+        // 1. SHY
+        let entities_downscaled = if config.shy {
+            self.shy_downscaling(self.consolidation_params.shy_factor)
+        } else {
+            0
+        };
+
+        // 2. Replay
+        let replay = if config.replay {
+            self.interleaved_replay()?
+        } else {
+            ReplayStats {
+                episodes_replayed: 0,
+                entities_reactivated: 0,
+            }
+        };
+
+        // 3. CLS
+        let cls = if config.cls {
+            self.cls_transfer()?
+        } else {
+            ClsStats {
+                episodes_processed: 0,
+                facts_created: 0,
+                facts_reinforced: 0,
+            }
+        };
+
+        // 4. Memory linking
+        let linking = if config.linking {
+            self.memory_linking()?
+        } else {
+            LinkingStats {
+                links_created: 0,
+                links_reinforced: 0,
+            }
+        };
+
+        // 5. Dark check
+        let dark_nodes_marked = if config.dark_check {
+            self.dark_node_pass()
+        } else {
+            0
+        };
+
+        // 6. GC (destructive, opt-in)
+        let gc_deleted = if config.gc {
+            let candidates = self.gc_candidates();
+            let count = candidates.len();
+            for id in candidates {
+                let _ = self.delete_entity(id);
+            }
+            count
+        } else {
+            0
+        };
+
+        Ok(DreamCycleStats {
+            entities_downscaled,
+            replay,
+            cls,
+            linking,
+            dark_nodes_marked,
+            gc_deleted,
         })
     }
 
@@ -3364,6 +3445,88 @@ mod tests {
         let stats = hora.memory_linking().unwrap();
         // 4 entities → C(4,2) = 6 pairs × 2 directions = 12 links
         assert_eq!(stats.links_created, 12);
+    }
+
+    // --- Dream Cycle ---
+
+    #[test]
+    fn test_dream_cycle_executes_all_steps() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+
+        let config = DreamCycleConfig::default();
+        let stats = hora.dream_cycle(&config).unwrap();
+
+        // SHY should have downscaled 2 entities
+        assert_eq!(stats.entities_downscaled, 2);
+        // Replay should have processed 1 episode
+        assert_eq!(stats.replay.episodes_replayed, 1);
+        // Linking should have created temporal links
+        assert!(stats.linking.links_created > 0);
+    }
+
+    #[test]
+    fn test_dream_cycle_disable_steps() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.add_entity("node", "A", None, None).unwrap();
+        hora.add_entity("node", "B", None, None).unwrap();
+
+        let config = DreamCycleConfig {
+            shy: false,
+            replay: false,
+            cls: false,
+            linking: false,
+            dark_check: false,
+            gc: false,
+        };
+
+        let stats = hora.dream_cycle(&config).unwrap();
+        assert_eq!(stats.entities_downscaled, 0);
+        assert_eq!(stats.replay.episodes_replayed, 0);
+        assert_eq!(stats.cls.episodes_processed, 0);
+        assert_eq!(stats.linking.links_created, 0);
+        assert_eq!(stats.dark_nodes_marked, 0);
+        assert_eq!(stats.gc_deleted, 0);
+    }
+
+    #[test]
+    fn test_dream_cycle_idempotent_no_duplicates() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[]).unwrap();
+
+        let config = DreamCycleConfig::default();
+        let stats1 = hora.dream_cycle(&config).unwrap();
+        let stats2 = hora.dream_cycle(&config).unwrap();
+
+        // Second call: linking should reinforce, not create new links
+        assert_eq!(stats2.linking.links_created, 0);
+        // First call created links, second reinforced them
+        assert!(stats1.linking.links_created > 0);
+        assert!(stats2.linking.links_reinforced > 0);
+    }
+
+    #[test]
+    fn test_dream_cycle_stats_coherent() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let _b = hora.add_entity("node", "B", None, None).unwrap();
+        let _c = hora.add_entity("node", "C", None, None).unwrap();
+        hora.add_episode(EpisodeSource::Conversation, "s1", &[a], &[]).unwrap();
+
+        let config = DreamCycleConfig::default();
+        let stats = hora.dream_cycle(&config).unwrap();
+
+        // 3 entities downscaled
+        assert_eq!(stats.entities_downscaled, 3);
+        // 1 episode replayed with 1 entity
+        assert_eq!(stats.replay.episodes_replayed, 1);
+        assert_eq!(stats.replay.entities_reactivated, 1);
+        // No GC by default
+        assert_eq!(stats.gc_deleted, 0);
     }
 
     #[test]

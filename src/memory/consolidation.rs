@@ -86,3 +86,39 @@ pub struct LinkingStats {
     /// Number of existing temporal links reinforced.
     pub links_reinforced: usize,
 }
+
+/// Per-step enable/disable configuration for the dream cycle.
+#[derive(Debug, Clone)]
+pub struct DreamCycleConfig {
+    pub shy: bool,
+    pub replay: bool,
+    pub cls: bool,
+    pub linking: bool,
+    pub dark_check: bool,
+    /// If true, actually delete GC-eligible dark entities.
+    pub gc: bool,
+}
+
+impl Default for DreamCycleConfig {
+    fn default() -> Self {
+        Self {
+            shy: true,
+            replay: true,
+            cls: true,
+            linking: true,
+            dark_check: true,
+            gc: false, // destructive — opt-in
+        }
+    }
+}
+
+/// Aggregated statistics from a full dream cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DreamCycleStats {
+    pub entities_downscaled: usize,
+    pub replay: ReplayStats,
+    pub cls: ClsStats,
+    pub linking: LinkingStats,
+    pub dark_nodes_marked: usize,
+    pub gc_deleted: usize,
+}
