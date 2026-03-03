@@ -149,7 +149,8 @@ fn is_process_alive(pid: u32) -> bool {
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
-    // kill(pid, 0) checks existence without sending a signal.
+    // SAFETY: kill(pid, 0) only checks process existence, no signal sent.
+    // pid as i32: PIDs > i32::MAX are not used by any real OS.
     unsafe { kill(pid as i32, 0) == 0 }
 }
 
@@ -323,9 +324,15 @@ impl Database {
         })
     }
 
+    /// Maximum page number accepted during WAL replay (prevents OOM from crafted WAL).
+    const MAX_REPLAY_PAGE: u32 = 16_000_000; // ~64 GB at 4K pages
+
     /// Replay WAL frames into the allocator.
     fn replay_frames(alloc: &mut PageAllocator, frames: &[WalFrame]) {
         for frame in frames {
+            if frame.page_number > Self::MAX_REPLAY_PAGE {
+                continue; // skip implausibly large page numbers
+            }
             let page_num = frame.page_number as usize;
             // Extend allocator if WAL references pages beyond current size
             while alloc.page_count() as usize <= page_num {

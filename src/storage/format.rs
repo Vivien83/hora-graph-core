@@ -145,8 +145,17 @@ fn read_f32(r: &mut impl Read) -> io::Result<f32> {
     r.read_exact(&mut buf)?;
     Ok(f32::from_le_bytes(buf))
 }
+/// Maximum single allocation from file data (256 MB).
+const MAX_ALLOC: usize = 256 * 1024 * 1024;
+
 fn read_string(r: &mut impl Read) -> io::Result<String> {
     let len = read_u32(r)? as usize;
+    if len > MAX_ALLOC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("string length {} exceeds max {}", len, MAX_ALLOC),
+        ));
+    }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     String::from_utf8(buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -213,6 +222,12 @@ pub(crate) fn write_properties(w: &mut impl Write, props: &Properties) -> io::Re
 
 pub(crate) fn read_properties(r: &mut impl Read) -> io::Result<Properties> {
     let count = read_u32(r)? as usize;
+    if count > MAX_ALLOC / 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("property count {} exceeds max", count),
+        ));
+    }
     let mut map = Properties::with_capacity(count);
     for _ in 0..count {
         let key = read_string(r)?;
@@ -277,7 +292,16 @@ fn read_entity(r: &mut impl Read) -> io::Result<Entity> {
     let has_embedding = read_u8(r)?;
     let embedding = if has_embedding != 0 {
         let len = read_u32(r)? as usize;
-        let mut bytes = vec![0u8; len * 4];
+        let byte_len = len.checked_mul(4).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "embedding length overflow")
+        })?;
+        if byte_len > MAX_ALLOC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("embedding size {} exceeds max {}", byte_len, MAX_ALLOC),
+            ));
+        }
+        let mut bytes = vec![0u8; byte_len];
         r.read_exact(&mut bytes)?;
         let emb: Vec<f32> = bytes
             .chunks_exact(4)
@@ -490,17 +514,20 @@ pub fn deserialize(r: &mut impl Read) -> Result<DeserializedGraph> {
         episode_count,
     };
 
-    let mut entities = Vec::with_capacity(entity_count as usize);
+    // Cap pre-allocation to avoid OOM from crafted headers (actual count still honoured)
+    let cap = |n: u32| (n as usize).min(1_000_000);
+
+    let mut entities = Vec::with_capacity(cap(entity_count));
     for _ in 0..entity_count {
         entities.push(read_entity(r)?);
     }
 
-    let mut edges = Vec::with_capacity(edge_count as usize);
+    let mut edges = Vec::with_capacity(cap(edge_count));
     for _ in 0..edge_count {
         edges.push(read_edge(r)?);
     }
 
-    let mut episodes = Vec::with_capacity(episode_count as usize);
+    let mut episodes = Vec::with_capacity(cap(episode_count));
     for _ in 0..episode_count {
         episodes.push(read_episode(r)?);
     }

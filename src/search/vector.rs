@@ -20,7 +20,7 @@ static COSINE_FN: OnceLock<CosineFn> = OnceLock::new();
 ///
 /// Returns 0.0 if either vector has zero norm.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len(), "vectors must have equal length");
+    assert_eq!(a.len(), b.len(), "vectors must have equal length");
     let f = COSINE_FN.get_or_init(select_impl);
     f(a, b)
 }
@@ -29,13 +29,14 @@ fn select_impl() -> CosineFn {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: AVX2+FMA detected above; cosine_similarity asserts equal lengths.
             return |a, b| unsafe { cosine_avx2(a, b) };
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        // NEON is always available on AArch64
+        // SAFETY: NEON is always available on AArch64; cosine_similarity asserts equal lengths.
         return |a, b| unsafe { cosine_neon(a, b) };
     }
 
@@ -68,6 +69,8 @@ pub fn cosine_scalar(a: &[f32], b: &[f32]) -> f32 {
 
 // ── NEON (AArch64) ────────────────────────────────────────────────
 
+/// SAFETY: Caller must ensure `a.len() == b.len()` and that NEON is available.
+/// `cosine_similarity` enforces both via `assert_eq!` + AArch64 target gate.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn cosine_neon(a: &[f32], b: &[f32]) -> f32 {
@@ -153,6 +156,8 @@ unsafe fn cosine_neon(a: &[f32], b: &[f32]) -> f32 {
 
 // ── AVX2 + FMA (x86_64) ──────────────────────────────────────────
 
+/// SAFETY: Caller must ensure `a.len() == b.len()` and that AVX2+FMA are available.
+/// `cosine_similarity` enforces both via `assert_eq!` + `is_x86_feature_detected!`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn cosine_avx2(a: &[f32], b: &[f32]) -> f32 {

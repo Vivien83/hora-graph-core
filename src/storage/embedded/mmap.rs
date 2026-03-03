@@ -131,6 +131,8 @@ mod mmap_unix {
             }
 
             let fd = file.as_raw_fd();
+            // SAFETY: fd is a valid open file descriptor, len > 0 (checked above).
+            // Return value is checked against MAP_FAILED before use.
             let ptr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_PRIVATE, fd, 0) };
             if ptr == MAP_FAILED {
                 return Err(std::io::Error::last_os_error());
@@ -146,10 +148,14 @@ mod mmap_unix {
 
         /// Re-mmap after the file has grown (e.g., after checkpoint).
         pub fn remap(&mut self, path: &Path) -> std::io::Result<()> {
+            // SAFETY: munmap is called only when ptr is non-null and len > 0.
+            // We immediately null the pointer to prevent UAF if a later step fails.
             if !self.ptr.is_null() && self.len > 0 {
                 unsafe {
                     munmap(self.ptr as *mut u8, self.len);
                 }
+                self.ptr = std::ptr::null();
+                self.len = 0;
             }
 
             let file = File::open(path)?;
@@ -163,6 +169,7 @@ mod mmap_unix {
             }
 
             let fd = file.as_raw_fd();
+            // SAFETY: fd is valid, new_len > 0 (checked above). Old mapping already unmapped.
             let ptr = unsafe { mmap(std::ptr::null_mut(), new_len, PROT_READ, MAP_PRIVATE, fd, 0) };
             if ptr == MAP_FAILED {
                 return Err(std::io::Error::last_os_error());
@@ -180,6 +187,8 @@ mod mmap_unix {
             let offset = page_num as usize * self.page_sz;
             let end = offset + self.page_sz;
             if end <= self.len && !self.ptr.is_null() {
+                // SAFETY: ptr is non-null and end <= len (checked above), so the
+                // range [ptr+offset .. ptr+offset+page_sz] is within the mapped region.
                 Some(unsafe { std::slice::from_raw_parts(self.ptr.add(offset), self.page_sz) })
             } else {
                 None
@@ -198,6 +207,8 @@ mod mmap_unix {
     impl Drop for MmapReader {
         fn drop(&mut self) {
             if !self.ptr.is_null() && self.len > 0 {
+                // SAFETY: ptr is non-null, len > 0, and this is the only Drop so
+                // the region is unmapped exactly once.
                 unsafe {
                     munmap(self.ptr as *mut u8, self.len);
                 }
