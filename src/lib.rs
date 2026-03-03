@@ -20,6 +20,7 @@ pub use crate::memory::fsrs::FsrsParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
+pub use crate::storage::format::{verify_file, VerifyReport};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};

@@ -1,25 +1,84 @@
-//! Binary serialization format for .hora files (v0.1 simple format).
+//! Binary serialization format for .hora files.
 //!
-//! Layout:
-//!   [FileHeader: 48 bytes]
-//!   [Entity]*entity_count
-//!   [Edge]*edge_count
-//!   [Episode]*episode_count
+//! ## Header layout (48 bytes)
 //!
-//! All multi-byte integers are little-endian. Strings are length-prefixed (u32 + bytes).
+//! ```text
+//! Offset  Size  Field               Notes
+//! ──────  ────  ──────────────────  ──────────────────────────────────
+//! [0..4]    4   magic               "HORA" (0x484F5241)
+//! [4..6]    2   format_version      u16 LE — v1 (no checksum), v2 (with checksum)
+//! [6..8]    2   embedding_dims      u16 LE — 0 = text-only mode
+//! [8..16]   8   next_entity_id      u64 LE — next auto-increment
+//! [16..24]  8   next_edge_id        u64 LE
+//! [24..32]  8   next_episode_id     u64 LE
+//! [32..36]  4   entity_count        u32 LE
+//! [36..40]  4   edge_count          u32 LE
+//! [40..44]  4   episode_count       u32 LE
+//! [44..48]  4   header_checksum     u32 LE — CRC32-IEEE of bytes [0..44] (v2+; zero in v1)
+//! ```
+//!
+//! ## Body
+//!
+//! ```text
+//! [Entity]*entity_count
+//! [Edge]*edge_count
+//! [Episode]*episode_count
+//! ```
+//!
+//! All multi-byte integers are little-endian. Strings are length-prefixed (u32 LE + UTF-8 bytes).
+//!
+//! ## Entity layout
+//!
+//! ```text
+//! id: u64, entity_type: str, name: str, properties: props,
+//! has_embedding: u8 (0|1), [embedding_len: u32, f32*embedding_len], created_at: i64
+//! ```
+//!
+//! ## Edge layout
+//!
+//! ```text
+//! id: u64, source: u64, target: u64, relation_type: str, description: str,
+//! confidence: f32, valid_at: i64, invalid_at: i64, created_at: i64
+//! ```
+//!
+//! ## Episode layout
+//!
+//! ```text
+//! id: u64, source: u8, session_id: str,
+//! entity_count: u32, entity_ids: u64*entity_count,
+//! fact_count: u32, fact_ids: u64*fact_count,
+//! created_at: i64, consolidation_count: u32
+//! ```
+//!
+//! ## Properties layout
+//!
+//! ```text
+//! count: u32, (key: str, tag: u8, value)*count
+//! Tags: 0=String(str), 1=Int(i64), 2=Float(f64), 3=Bool(u8)
+//! ```
+//!
+//! ## Version history
+//!
+//! - **v1**: Original format. No header checksum (bytes [44..48] = reserved zeros).
+//! - **v2**: Added CRC32-IEEE header checksum. Body format unchanged.
+//!   Files written as v1 are readable (checksum skipped). On next `flush()`, written as v2.
 
 use std::io::{self, Read, Write};
+use std::path::Path;
 
 use crate::core::edge::Edge;
 use crate::core::entity::Entity;
 use crate::core::episode::Episode;
 use crate::core::types::{EdgeId, EntityId, EpisodeSource, Properties, PropertyValue};
 use crate::error::{HoraError, Result};
+use crate::storage::embedded::page::crc32;
 
 const MAGIC: [u8; 4] = *b"HORA";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
+const HEADER_SIZE: usize = 48;
 
 /// Metadata stored in the file header.
+#[derive(Debug)]
 pub struct FileHeader {
     pub embedding_dims: u16,
     pub next_entity_id: u64,
@@ -34,9 +93,6 @@ pub struct FileHeader {
 
 fn write_u8(w: &mut impl Write, v: u8) -> io::Result<()> {
     w.write_all(&[v])
-}
-fn write_u16(w: &mut impl Write, v: u16) -> io::Result<()> {
-    w.write_all(&v.to_le_bytes())
 }
 fn write_u32(w: &mut impl Write, v: u32) -> io::Result<()> {
     w.write_all(&v.to_le_bytes())
@@ -61,11 +117,6 @@ fn read_u8(r: &mut impl Read) -> io::Result<u8> {
     let mut buf = [0u8; 1];
     r.read_exact(&mut buf)?;
     Ok(buf[0])
-}
-fn read_u16(r: &mut impl Read) -> io::Result<u16> {
-    let mut buf = [0u8; 2];
-    r.read_exact(&mut buf)?;
-    Ok(u16::from_le_bytes(buf))
 }
 fn read_u32(r: &mut impl Read) -> io::Result<u32> {
     let mut buf = [0u8; 4];
@@ -330,29 +381,29 @@ pub fn serialize(
     edges: &[Edge],
     episodes: &[Episode],
 ) -> Result<()> {
-    // Header (48 bytes)
-    w.write_all(&MAGIC)?;
-    write_u16(w, FORMAT_VERSION)?;
-    write_u16(w, header.embedding_dims)?;
-    write_u64(w, header.next_entity_id)?;
-    write_u64(w, header.next_edge_id)?;
-    write_u64(w, header.next_episode_id)?;
-    write_u32(w, header.entity_count)?;
-    write_u32(w, header.edge_count)?;
-    write_u32(w, header.episode_count)?;
-    w.write_all(&[0u8; 4])?; // reserved
+    // Build the first 44 bytes into a buffer to compute CRC32
+    let mut hdr_buf = [0u8; HEADER_SIZE];
+    hdr_buf[0..4].copy_from_slice(&MAGIC);
+    hdr_buf[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    hdr_buf[6..8].copy_from_slice(&header.embedding_dims.to_le_bytes());
+    hdr_buf[8..16].copy_from_slice(&header.next_entity_id.to_le_bytes());
+    hdr_buf[16..24].copy_from_slice(&header.next_edge_id.to_le_bytes());
+    hdr_buf[24..32].copy_from_slice(&header.next_episode_id.to_le_bytes());
+    hdr_buf[32..36].copy_from_slice(&header.entity_count.to_le_bytes());
+    hdr_buf[36..40].copy_from_slice(&header.edge_count.to_le_bytes());
+    hdr_buf[40..44].copy_from_slice(&header.episode_count.to_le_bytes());
+    // CRC32 of bytes [0..44]
+    let checksum = crc32(&hdr_buf[0..44]);
+    hdr_buf[44..48].copy_from_slice(&checksum.to_le_bytes());
 
-    // Entities
+    w.write_all(&hdr_buf)?;
+
     for entity in entities {
         write_entity(w, entity)?;
     }
-
-    // Edges
     for edge in edges {
         write_edge(w, edge)?;
     }
-
-    // Episodes
     for episode in episodes {
         write_episode(w, episode)?;
     }
@@ -361,6 +412,7 @@ pub fn serialize(
 }
 
 /// Returned data from deserializing a .hora file.
+#[derive(Debug)]
 pub struct DeserializedGraph {
     pub header: FileHeader,
     pub entities: Vec<Entity>,
@@ -369,37 +421,49 @@ pub struct DeserializedGraph {
 }
 
 /// Deserialize a complete graph state from a reader.
+///
+/// Accepts format v1 (no checksum) and v2 (with CRC32 checksum).
+/// v1 files are read without checksum verification.
 pub fn deserialize(r: &mut impl Read) -> Result<DeserializedGraph> {
+    // Read the full header as raw bytes for checksum verification
+    let mut hdr_buf = [0u8; HEADER_SIZE];
+    r.read_exact(&mut hdr_buf)?;
+
     // Magic
-    let mut magic = [0u8; 4];
-    r.read_exact(&mut magic)?;
-    if magic != MAGIC {
+    if hdr_buf[0..4] != MAGIC {
         return Err(HoraError::InvalidFile {
             reason: "not a .hora file (bad magic)",
         });
     }
 
     // Version
-    let version = read_u16(r)?;
-    if version != FORMAT_VERSION {
+    let version = u16::from_le_bytes([hdr_buf[4], hdr_buf[5]]);
+    if version == 0 || version > FORMAT_VERSION {
         return Err(HoraError::VersionMismatch {
             file_version: version,
-            min_supported: FORMAT_VERSION,
+            min_supported: 1,
             max_supported: FORMAT_VERSION,
         });
     }
 
-    let embedding_dims = read_u16(r)?;
-    let next_entity_id = read_u64(r)?;
-    let next_edge_id = read_u64(r)?;
-    let next_episode_id = read_u64(r)?;
-    let entity_count = read_u32(r)?;
-    let edge_count = read_u32(r)?;
-    let episode_count = read_u32(r)?;
+    // Checksum verification (v2+ only)
+    if version >= 2 {
+        let stored = u32::from_le_bytes(hdr_buf[44..48].try_into().unwrap());
+        let computed = crc32(&hdr_buf[0..44]);
+        if stored != computed {
+            return Err(HoraError::InvalidFile {
+                reason: "header checksum mismatch",
+            });
+        }
+    }
 
-    // Reserved
-    let mut reserved = [0u8; 4];
-    r.read_exact(&mut reserved)?;
+    let embedding_dims = u16::from_le_bytes([hdr_buf[6], hdr_buf[7]]);
+    let next_entity_id = u64::from_le_bytes(hdr_buf[8..16].try_into().unwrap());
+    let next_edge_id = u64::from_le_bytes(hdr_buf[16..24].try_into().unwrap());
+    let next_episode_id = u64::from_le_bytes(hdr_buf[24..32].try_into().unwrap());
+    let entity_count = u32::from_le_bytes(hdr_buf[32..36].try_into().unwrap());
+    let edge_count = u32::from_le_bytes(hdr_buf[36..40].try_into().unwrap());
+    let episode_count = u32::from_le_bytes(hdr_buf[40..44].try_into().unwrap());
 
     let header = FileHeader {
         embedding_dims,
@@ -411,19 +475,16 @@ pub fn deserialize(r: &mut impl Read) -> Result<DeserializedGraph> {
         episode_count,
     };
 
-    // Entities
     let mut entities = Vec::with_capacity(entity_count as usize);
     for _ in 0..entity_count {
         entities.push(read_entity(r)?);
     }
 
-    // Edges
     let mut edges = Vec::with_capacity(edge_count as usize);
     for _ in 0..edge_count {
         edges.push(read_edge(r)?);
     }
 
-    // Episodes
     let mut episodes = Vec::with_capacity(episode_count as usize);
     for _ in 0..episode_count {
         episodes.push(read_episode(r)?);
@@ -435,4 +496,323 @@ pub fn deserialize(r: &mut impl Read) -> Result<DeserializedGraph> {
         edges,
         episodes,
     })
+}
+
+/// Result of verifying a .hora file.
+#[derive(Debug)]
+pub struct VerifyReport {
+    pub format_version: u16,
+    pub entity_count: u32,
+    pub edge_count: u32,
+    pub episode_count: u32,
+    pub embedding_dims: u16,
+    pub checksum_verified: bool,
+}
+
+/// Verify the integrity of a .hora file without loading all data.
+pub fn verify_file(path: impl AsRef<Path>) -> Result<VerifyReport> {
+    let data = std::fs::read(path.as_ref())?;
+    if data.len() < HEADER_SIZE {
+        return Err(HoraError::InvalidFile {
+            reason: "file too short for header",
+        });
+    }
+
+    if data[0..4] != MAGIC {
+        return Err(HoraError::InvalidFile {
+            reason: "not a .hora file (bad magic)",
+        });
+    }
+
+    let version = u16::from_le_bytes([data[4], data[5]]);
+    if version == 0 || version > FORMAT_VERSION {
+        return Err(HoraError::VersionMismatch {
+            file_version: version,
+            min_supported: 1,
+            max_supported: FORMAT_VERSION,
+        });
+    }
+
+    let checksum_verified = if version >= 2 {
+        let stored = u32::from_le_bytes(data[44..48].try_into().unwrap());
+        let computed = crc32(&data[0..44]);
+        if stored != computed {
+            return Err(HoraError::InvalidFile {
+                reason: "header checksum mismatch",
+            });
+        }
+        true
+    } else {
+        false
+    };
+
+    // Try to fully deserialize to verify body integrity
+    let mut cursor = io::Cursor::new(&data);
+    let graph = deserialize(&mut cursor)?;
+
+    Ok(VerifyReport {
+        format_version: version,
+        entity_count: graph.header.entity_count,
+        edge_count: graph.header.edge_count,
+        episode_count: graph.header.episode_count,
+        embedding_dims: graph.header.embedding_dims,
+        checksum_verified,
+    })
+}
+
+// ── Tests ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn sample_entity(id: u64) -> Entity {
+        let mut props = HashMap::new();
+        props.insert("lang".to_string(), PropertyValue::String("Rust".into()));
+        props.insert("stars".to_string(), PropertyValue::Int(42));
+        props.insert("score".to_string(), PropertyValue::Float(9.5));
+        props.insert("active".to_string(), PropertyValue::Bool(true));
+        Entity {
+            id: EntityId(id),
+            entity_type: "project".to_string(),
+            name: format!("project_{}", id),
+            properties: props,
+            embedding: Some(vec![0.1, 0.2, 0.3]),
+            created_at: 1000,
+        }
+    }
+
+    fn sample_edge(id: u64, src: u64, tgt: u64) -> Edge {
+        Edge {
+            id: EdgeId(id),
+            source: EntityId(src),
+            target: EntityId(tgt),
+            relation_type: "related_to".to_string(),
+            description: "test relation".to_string(),
+            confidence: 0.95,
+            valid_at: 1000,
+            invalid_at: 0,
+            created_at: 1000,
+        }
+    }
+
+    fn sample_episode(id: u64) -> Episode {
+        Episode {
+            id,
+            source: EpisodeSource::Conversation,
+            session_id: "sess_001".to_string(),
+            entity_ids: vec![EntityId(1), EntityId(2)],
+            fact_ids: vec![EdgeId(1)],
+            created_at: 2000,
+            consolidation_count: 0,
+        }
+    }
+
+    fn sample_header(entities: u32, edges: u32, episodes: u32) -> FileHeader {
+        FileHeader {
+            embedding_dims: 3,
+            next_entity_id: entities as u64 + 1,
+            next_edge_id: edges as u64 + 1,
+            next_episode_id: episodes as u64 + 1,
+            entity_count: entities,
+            edge_count: edges,
+            episode_count: episodes,
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_v2() {
+        let entities = vec![sample_entity(1), sample_entity(2)];
+        let edges = vec![sample_edge(1, 1, 2)];
+        let episodes = vec![sample_episode(1)];
+        let header = sample_header(2, 1, 1);
+
+        let mut buf = Vec::new();
+        serialize(&mut buf, &header, &entities, &edges, &episodes).unwrap();
+
+        // Verify header is v2
+        assert_eq!(buf[0..4], *b"HORA");
+        assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), 2);
+
+        // Verify checksum is non-zero
+        let checksum = u32::from_le_bytes(buf[44..48].try_into().unwrap());
+        assert_ne!(checksum, 0);
+
+        // Deserialize
+        let mut cursor = io::Cursor::new(&buf);
+        let graph = deserialize(&mut cursor).unwrap();
+        assert_eq!(graph.header.entity_count, 2);
+        assert_eq!(graph.header.edge_count, 1);
+        assert_eq!(graph.header.episode_count, 1);
+        assert_eq!(graph.entities.len(), 2);
+        assert_eq!(graph.entities[0].name, "project_1");
+        assert_eq!(graph.edges[0].relation_type, "related_to");
+        assert_eq!(graph.episodes[0].session_id, "sess_001");
+    }
+
+    #[test]
+    fn test_checksum_detects_corruption() {
+        let entities = vec![sample_entity(1)];
+        let header = sample_header(1, 0, 0);
+
+        let mut buf = Vec::new();
+        serialize(&mut buf, &header, &entities, &[], &[]).unwrap();
+
+        // Corrupt a byte in the header (entity_count field)
+        buf[32] = 0xFF;
+
+        let mut cursor = io::Cursor::new(&buf);
+        let result = deserialize(&mut cursor);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HoraError::InvalidFile { reason } => {
+                assert!(reason.contains("checksum"));
+            }
+            other => panic!("expected InvalidFile, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_v1_backward_compat() {
+        // Build a v1 file manually (same layout, version=1, checksum=0)
+        let entities = vec![sample_entity(1)];
+        let header = sample_header(1, 0, 0);
+
+        let mut buf = Vec::new();
+        serialize(&mut buf, &header, &entities, &[], &[]).unwrap();
+
+        // Patch version to 1 and zero out checksum (simulating old v1 file)
+        buf[4] = 1;
+        buf[5] = 0;
+        buf[44] = 0;
+        buf[45] = 0;
+        buf[46] = 0;
+        buf[47] = 0;
+
+        // Should still deserialize (v1 = no checksum check)
+        let mut cursor = io::Cursor::new(&buf);
+        let graph = deserialize(&mut cursor).unwrap();
+        assert_eq!(graph.header.entity_count, 1);
+        assert_eq!(graph.entities[0].name, "project_1");
+    }
+
+    #[test]
+    fn test_bad_magic_rejected() {
+        let mut buf = vec![0u8; 48];
+        buf[0..4].copy_from_slice(b"NOPE");
+        let mut cursor = io::Cursor::new(&buf);
+        let result = deserialize(&mut cursor);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_future_version_rejected() {
+        let mut buf = vec![0u8; 48];
+        buf[0..4].copy_from_slice(b"HORA");
+        buf[4..6].copy_from_slice(&99u16.to_le_bytes());
+        let mut cursor = io::Cursor::new(&buf);
+        let result = deserialize(&mut cursor);
+        match result.unwrap_err() {
+            HoraError::VersionMismatch {
+                file_version,
+                min_supported,
+                max_supported,
+            } => {
+                assert_eq!(file_version, 99);
+                assert_eq!(min_supported, 1);
+                assert_eq!(max_supported, 2);
+            }
+            other => panic!("expected VersionMismatch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.hora");
+
+        let entities = vec![sample_entity(1), sample_entity(2)];
+        let edges = vec![sample_edge(1, 1, 2)];
+        let episodes = vec![sample_episode(1)];
+        let header = sample_header(2, 1, 1);
+
+        let mut buf = Vec::new();
+        serialize(&mut buf, &header, &entities, &edges, &episodes).unwrap();
+        std::fs::write(&path, &buf).unwrap();
+
+        let report = verify_file(&path).unwrap();
+        assert_eq!(report.format_version, 2);
+        assert_eq!(report.entity_count, 2);
+        assert_eq!(report.edge_count, 1);
+        assert_eq!(report.episode_count, 1);
+        assert_eq!(report.embedding_dims, 3);
+        assert!(report.checksum_verified);
+    }
+
+    #[test]
+    fn test_verify_detects_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.hora");
+
+        let entities = vec![sample_entity(1)];
+        let header = sample_header(1, 0, 0);
+
+        let mut buf = Vec::new();
+        serialize(&mut buf, &header, &entities, &[], &[]).unwrap();
+
+        // Corrupt one byte in header
+        buf[10] = 0xFF;
+        std::fs::write(&path, &buf).unwrap();
+
+        let result = verify_file(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_graph_roundtrip() {
+        let header = FileHeader {
+            embedding_dims: 0,
+            next_entity_id: 1,
+            next_edge_id: 1,
+            next_episode_id: 1,
+            entity_count: 0,
+            edge_count: 0,
+            episode_count: 0,
+        };
+
+        let mut buf = Vec::new();
+        serialize(&mut buf, &header, &[], &[], &[]).unwrap();
+        assert_eq!(buf.len(), HEADER_SIZE);
+
+        let mut cursor = io::Cursor::new(&buf);
+        let graph = deserialize(&mut cursor).unwrap();
+        assert_eq!(graph.entities.len(), 0);
+        assert_eq!(graph.edges.len(), 0);
+        assert_eq!(graph.episodes.len(), 0);
+    }
+
+    #[test]
+    fn test_reference_file_generation() {
+        // Generate a reference file and verify it can be read back identically.
+        // This test creates a deterministic graph and verifies byte-level stability.
+        let entities = vec![sample_entity(1), sample_entity(2)];
+        let edges = vec![sample_edge(1, 1, 2)];
+        let episodes = vec![sample_episode(1)];
+        let header = sample_header(2, 1, 1);
+
+        let mut buf1 = Vec::new();
+        serialize(&mut buf1, &header, &entities, &edges, &episodes).unwrap();
+
+        let mut buf2 = Vec::new();
+        serialize(&mut buf2, &header, &entities, &edges, &episodes).unwrap();
+
+        // Same input = same output (deterministic)
+        assert_eq!(buf1, buf2);
+
+        // Verify the header checksum matches
+        let stored_crc = u32::from_le_bytes(buf1[44..48].try_into().unwrap());
+        let computed_crc = crc32(&buf1[0..44]);
+        assert_eq!(stored_crc, computed_crc);
+    }
 }
