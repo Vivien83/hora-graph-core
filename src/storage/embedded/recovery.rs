@@ -797,6 +797,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_write_lock_prevents_double_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.hora");

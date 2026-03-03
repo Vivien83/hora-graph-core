@@ -29,6 +29,7 @@ fn edge(id: u64, source: u64, target: u64) -> Edge {
     }
 }
 
+#[allow(dead_code)]
 fn episode(id: u64) -> Episode {
     Episode {
         id,
