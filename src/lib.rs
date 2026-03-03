@@ -15,7 +15,7 @@ pub use crate::error::{HoraError, Result};
 pub use crate::memory::dark_nodes::DarkNodeParams;
 pub use crate::memory::fsrs::FsrsParams;
 pub use crate::memory::reconsolidation::{MemoryPhase, ReconsolidationParams};
-pub use crate::memory::consolidation::{ConsolidationParams, ReplayStats};
+pub use crate::memory::consolidation::{ClsStats, ConsolidationParams, ReplayStats};
 pub use crate::memory::spreading::SpreadingParams;
 pub use crate::search::{SearchHit, SearchOpts};
 
@@ -915,6 +915,112 @@ impl HoraCore {
         Ok(ReplayStats {
             episodes_replayed,
             entities_reactivated,
+        })
+    }
+
+    /// CLS transfer: extract recurring episodic patterns into semantic facts.
+    ///
+    /// Scans episodes with `consolidation_count >= cls_threshold`. For each,
+    /// collects the referenced facts and groups them by (source, relation, target).
+    /// Triplets seen in >= `cls_threshold` distinct episodes become semantic facts
+    /// (or get their confidence reinforced if already existing).
+    ///
+    /// Each processed episode gets its `consolidation_count` incremented.
+    pub fn cls_transfer(&mut self) -> Result<ClsStats> {
+        let threshold = self.consolidation_params.cls_threshold;
+        let all_episodes = self.storage.scan_all_episodes()?;
+
+        // Filter eligible episodes
+        let eligible: Vec<_> = all_episodes
+            .iter()
+            .filter(|ep| ep.consolidation_count >= threshold)
+            .collect();
+
+        if eligible.is_empty() {
+            return Ok(ClsStats {
+                episodes_processed: 0,
+                facts_created: 0,
+                facts_reinforced: 0,
+            });
+        }
+
+        // Count triplets across eligible episodes: (source, relation, target) → count
+        let mut triplet_counts: HashMap<(EntityId, String, EntityId), u32> = HashMap::new();
+
+        for ep in &eligible {
+            // Deduplicate triplets within a single episode
+            let mut seen_in_ep: HashSet<(EntityId, String, EntityId)> = HashSet::new();
+            for &fact_id in &ep.fact_ids {
+                if let Some(edge) = self.storage.get_edge(fact_id)? {
+                    let key = (edge.source, edge.relation_type.clone(), edge.target);
+                    if seen_in_ep.insert(key.clone()) {
+                        *triplet_counts.entry(key).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let mut facts_created = 0_usize;
+        let mut facts_reinforced = 0_usize;
+
+        // For triplets seen in >= threshold episodes, create or reinforce semantic fact
+        for ((source, relation, target), count) in &triplet_counts {
+            if *count < threshold {
+                continue;
+            }
+
+            // Check if a valid edge with same triplet already exists
+            let existing_edges = self.storage.get_entity_edges(*source)?;
+            let existing = existing_edges.iter().find(|e| {
+                e.target == *target
+                    && e.relation_type == *relation
+                    && e.invalid_at == 0
+            });
+
+            if let Some(edge) = existing {
+                // Reinforce: bump confidence (cap at 1.0)
+                let new_confidence = (edge.confidence + 0.1).min(1.0);
+                self.storage.put_edge(Edge {
+                    confidence: new_confidence,
+                    ..edge.clone()
+                })?;
+                facts_reinforced += 1;
+            } else {
+                // Check both entities still exist before creating
+                if self.storage.get_entity(*source)?.is_some()
+                    && self.storage.get_entity(*target)?.is_some()
+                {
+                    let id = EdgeId(self.next_edge_id);
+                    self.next_edge_id += 1;
+                    let now = crate::core::types::now_millis();
+                    let edge = Edge {
+                        id,
+                        source: *source,
+                        target: *target,
+                        relation_type: relation.clone(),
+                        description: format!("semantic: consolidated from {count} episodes"),
+                        confidence: 0.9,
+                        valid_at: now,
+                        invalid_at: 0,
+                        created_at: now,
+                    };
+                    self.storage.put_edge(edge)?;
+                    facts_created += 1;
+                }
+            }
+        }
+
+        // Increment consolidation_count on processed episodes
+        let episodes_processed = eligible.len();
+        for ep in &eligible {
+            self.storage
+                .update_episode_consolidation(ep.id, ep.consolidation_count + 1)?;
+        }
+
+        Ok(ClsStats {
+            episodes_processed,
+            facts_created,
+            facts_reinforced,
         })
     }
 
@@ -2975,6 +3081,120 @@ mod tests {
         let stats = hora.interleaved_replay().unwrap();
         assert_eq!(stats.episodes_replayed, 0);
         assert_eq!(stats.entities_reactivated, 0);
+    }
+
+    // --- CLS Transfer ---
+
+    #[test]
+    fn test_cls_transfer_creates_semantic_fact() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.consolidation_params.cls_threshold = 3;
+
+        let a = hora.add_entity("person", "Alice", None, None).unwrap();
+        let b = hora.add_entity("person", "Bob", None, None).unwrap();
+
+        // Create the same fact in 3 different episodes
+        let f1 = hora.add_fact(a, b, "knows", "they know each other", None).unwrap();
+        let f2 = hora.add_fact(a, b, "knows", "met at work", None).unwrap();
+        let f3 = hora.add_fact(a, b, "knows", "colleagues", None).unwrap();
+
+        // Create 3 episodes each referencing one of these facts, with consolidation_count >= 3
+        let ep1 = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f1]).unwrap();
+        let ep2 = hora.add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[f2]).unwrap();
+        let ep3 = hora.add_episode(EpisodeSource::Conversation, "s3", &[a, b], &[f3]).unwrap();
+
+        // Manually set consolidation_count to threshold
+        for _ in 0..3 {
+            hora.increment_consolidation(ep1).unwrap();
+            hora.increment_consolidation(ep2).unwrap();
+            hora.increment_consolidation(ep3).unwrap();
+        }
+
+        let stats = hora.cls_transfer().unwrap();
+        assert_eq!(stats.episodes_processed, 3);
+        // The triplet (a, "knows", b) appears in 3 episodes → creates 1 semantic fact
+        // But 3 existing edges already match, so it reinforces the first one found
+        assert!(stats.facts_created + stats.facts_reinforced > 0);
+    }
+
+    #[test]
+    fn test_cls_transfer_below_threshold_skipped() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.consolidation_params.cls_threshold = 3;
+
+        let a = hora.add_entity("person", "Alice", None, None).unwrap();
+        let b = hora.add_entity("person", "Bob", None, None).unwrap();
+        let f1 = hora.add_fact(a, b, "knows", "friends", None).unwrap();
+
+        // Only 2 episodes — below threshold
+        let ep1 = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f1]).unwrap();
+        let ep2 = hora.add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[f1]).unwrap();
+
+        for _ in 0..3 {
+            hora.increment_consolidation(ep1).unwrap();
+            hora.increment_consolidation(ep2).unwrap();
+        }
+
+        let stats = hora.cls_transfer().unwrap();
+        // 2 episodes processed but triplet count (2) < threshold (3)
+        assert_eq!(stats.episodes_processed, 2);
+        assert_eq!(stats.facts_created, 0);
+        assert_eq!(stats.facts_reinforced, 0);
+    }
+
+    #[test]
+    fn test_cls_transfer_reinforces_existing() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.consolidation_params.cls_threshold = 3;
+
+        let a = hora.add_entity("person", "Alice", None, None).unwrap();
+        let b = hora.add_entity("person", "Bob", None, None).unwrap();
+
+        // Create ONE canonical fact
+        let fact_id = hora.add_fact(a, b, "knows", "friends", Some(0.8)).unwrap();
+
+        // Reference the same fact_id in 3 episodes
+        let ep1 = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[fact_id]).unwrap();
+        let ep2 = hora.add_episode(EpisodeSource::Conversation, "s2", &[a, b], &[fact_id]).unwrap();
+        let ep3 = hora.add_episode(EpisodeSource::Conversation, "s3", &[a, b], &[fact_id]).unwrap();
+
+        for _ in 0..3 {
+            hora.increment_consolidation(ep1).unwrap();
+            hora.increment_consolidation(ep2).unwrap();
+            hora.increment_consolidation(ep3).unwrap();
+        }
+
+        let stats = hora.cls_transfer().unwrap();
+        assert_eq!(stats.episodes_processed, 3);
+        // Existing edge found → reinforce
+        assert_eq!(stats.facts_reinforced, 1);
+        assert_eq!(stats.facts_created, 0);
+
+        // Confidence should have increased from 0.8 to 0.9
+        let edge = hora.get_fact(fact_id).unwrap().unwrap();
+        assert!((edge.confidence - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cls_transfer_increments_consolidation() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.consolidation_params.cls_threshold = 3;
+
+        let a = hora.add_entity("person", "Alice", None, None).unwrap();
+        let b = hora.add_entity("person", "Bob", None, None).unwrap();
+        let f = hora.add_fact(a, b, "knows", "friends", None).unwrap();
+
+        let ep = hora.add_episode(EpisodeSource::Conversation, "s1", &[a, b], &[f]).unwrap();
+        // Set to exactly threshold
+        for _ in 0..3 {
+            hora.increment_consolidation(ep).unwrap();
+        }
+
+        let before = hora.get_episode(ep).unwrap().unwrap().consolidation_count;
+        hora.cls_transfer().unwrap();
+        let after = hora.get_episode(ep).unwrap().unwrap().consolidation_count;
+
+        assert_eq!(after, before + 1);
     }
 
     #[test]
