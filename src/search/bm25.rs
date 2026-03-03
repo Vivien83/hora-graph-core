@@ -109,7 +109,11 @@ impl Bm25Index {
         // Insert postings
         for (term, tf) in tf_map {
             let posting_list = self.postings.entry(term.to_string()).or_default();
-            posting_list.push(Posting { doc_id, tf, doc_len });
+            posting_list.push(Posting {
+                doc_id,
+                tf,
+                doc_len,
+            });
         }
 
         self.doc_lengths.insert(doc_id, doc_len);

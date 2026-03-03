@@ -1167,7 +1167,6 @@ impl HoraCore {
                     })?;
                     links_created += 1;
                 }
-
             }
         }
 
