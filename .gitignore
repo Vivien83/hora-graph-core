@@ -35,4 +35,10 @@ Thumbs.db
 *.log
 
 # HORA
-.hora/snapshots/
+.hora/
+
+# Build artifacts (bindings)
+bindings/node/package-lock.json
+bindings/python/hora_graph_core/*.so
+bindings/python/hora_graph_core/*.dylib*
+*.dSYM/
