@@ -1,17 +1,17 @@
-# @hora-engine/graph-core
+# hora-graph-core
 
 Bio-inspired embedded knowledge graph engine for Node.js — powered by Rust via [napi-rs](https://napi.rs).
 
 ## Install
 
 ```bash
-npm install @hora-engine/graph-core
+npm install hora-graph-core
 ```
 
 ## Quick start
 
 ```js
-const { HoraCore } = require('@hora-engine/graph-core');
+const { HoraCore } = require('hora-graph-core');
 
 const graph = new HoraCore();
 

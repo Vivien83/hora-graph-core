@@ -610,7 +610,7 @@ hora-graph-core expose la meme API en Rust, Node.js, Python, WASM et C.
 ### Node.js (napi-rs)
 
 ```js
-const { HoraCore } = require('@hora-engine/graph-core');
+const { HoraCore } = require('hora-graph-core');
 
 // En memoire
 const g = HoraCore.newMemory();

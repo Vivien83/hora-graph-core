@@ -7,9 +7,11 @@
 *Your memory never sleeps.*
 
 [![CI](https://github.com/Vivien83/hora-graph-core/actions/workflows/ci.yml/badge.svg)](https://github.com/Vivien83/hora-graph-core/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/hora-graph-core.svg)](https://crates.io/crates/hora-graph-core)
+[![npm](https://img.shields.io/npm/v/hora-graph-core.svg)](https://www.npmjs.com/package/hora-graph-core)
+[![PyPI](https://img.shields.io/pypi/v/hora-graph-core.svg)](https://pypi.org/project/hora-graph-core/)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
-[![v1.0.0](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://github.com/Vivien83/hora-graph-core/releases/tag/v1.0.0)
 [![Tests](https://img.shields.io/badge/tests-310%20passing-brightgreen.svg)](#)
 
 ---
@@ -67,10 +69,8 @@ BM25 search over 100K .. 668 us    Dream cycle 10K ........  26 ms
 
 ### Rust
 
-```toml
-# Cargo.toml
-[dependencies]
-hora-graph-core = { git = "https://github.com/Vivien83/hora-graph-core.git", tag = "v1.0.0" }
+```bash
+cargo add hora-graph-core
 ```
 
 ```rust
@@ -105,8 +105,12 @@ fn main() -> hora_graph_core::Result<()> {
 
 ### Node.js
 
+```bash
+npm install hora-graph-core
+```
+
 ```js
-const { HoraCore } = require('@hora-engine/graph-core');
+const { HoraCore } = require('hora-graph-core');
 
 const g = HoraCore.newMemory();
 const alice = g.addEntity('person', 'Alice');
@@ -118,6 +122,10 @@ console.log(`Found ${result.entityIds.length} entities`);
 ```
 
 ### Python
+
+```bash
+pip install hora-graph-core
+```
 
 ```python
 from hora_graph_core import HoraGraph
@@ -133,6 +141,10 @@ print(f"Found {len(result['entity_ids'])} entities")
 
 <details>
 <summary><strong>WebAssembly</strong></summary>
+
+```bash
+npm install hora-graph-wasm
+```
 
 ```js
 import init, { HoraWasm } from 'hora-graph-wasm';
