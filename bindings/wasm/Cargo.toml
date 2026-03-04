@@ -2,6 +2,11 @@
 name = "hora-graph-wasm"
 version = "1.0.0"
 edition = "2021"
+description = "Bio-inspired embedded knowledge graph engine — WASM binding"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Vivien83/hora-graph-core"
+homepage = "https://github.com/Vivien83/hora-graph-core#wasm"
+readme = "README.md"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
