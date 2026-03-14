@@ -165,6 +165,39 @@ impl StorageOps for MemoryStorage {
         Ok(self.entities.iter().flatten().cloned().collect())
     }
 
+    fn find_by_name(&self, entity_type: &str, name: &str) -> Result<Option<Entity>> {
+        Ok(self
+            .entities
+            .iter()
+            .flatten()
+            .find(|e| e.entity_type == entity_type && e.name == name)
+            .cloned())
+    }
+
+    fn scan_entities_filtered(
+        &self,
+        entity_type: &str,
+        prop_key: Option<&str>,
+        prop_value: Option<&crate::core::types::PropertyValue>,
+    ) -> Result<Vec<Entity>> {
+        Ok(self
+            .entities
+            .iter()
+            .flatten()
+            .filter(|e| {
+                if e.entity_type != entity_type {
+                    return false;
+                }
+                match (prop_key, prop_value) {
+                    (Some(k), Some(v)) => e.properties.get(k) == Some(v),
+                    (Some(k), None) => e.properties.contains_key(k),
+                    _ => true,
+                }
+            })
+            .cloned()
+            .collect())
+    }
+
     fn scan_all_edges(&self) -> Result<Vec<Edge>> {
         Ok(self.edges.iter().flatten().cloned().collect())
     }

@@ -47,6 +47,41 @@ pub trait StorageOps: Send {
     /// Return all episodes in storage.
     fn scan_all_episodes(&self) -> Result<Vec<Episode>>;
 
+    // --- Lookup ---
+
+    /// Find an entity by exact type and name match.
+    /// Default implementation scans all entities — backends may override for performance.
+    fn find_by_name(&self, entity_type: &str, name: &str) -> Result<Option<Entity>> {
+        let all = self.scan_all_entities()?;
+        Ok(all
+            .into_iter()
+            .find(|e| e.entity_type == entity_type && e.name == name))
+    }
+
+    /// Return all entities matching a type and optional property key/value filter.
+    /// Default implementation scans all entities — backends may override for performance.
+    fn scan_entities_filtered(
+        &self,
+        entity_type: &str,
+        prop_key: Option<&str>,
+        prop_value: Option<&crate::core::types::PropertyValue>,
+    ) -> Result<Vec<Entity>> {
+        let all = self.scan_all_entities()?;
+        Ok(all
+            .into_iter()
+            .filter(|e| {
+                if e.entity_type != entity_type {
+                    return false;
+                }
+                match (prop_key, prop_value) {
+                    (Some(k), Some(v)) => e.properties.get(k) == Some(v),
+                    (Some(k), None) => e.properties.contains_key(k),
+                    _ => true,
+                }
+            })
+            .collect())
+    }
+
     // --- Stats ---
     /// Return aggregate counts of entities, edges, and episodes.
     fn stats(&self) -> StorageStats;

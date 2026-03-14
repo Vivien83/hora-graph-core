@@ -90,7 +90,7 @@ fn bench_bm25_search(c: &mut Criterion) {
     group.sample_size(20);
 
     for n in [1_000, 10_000, 100_000] {
-        let mut hora = build_graph(n);
+        let hora = build_graph(n);
 
         group.bench_with_input(BenchmarkId::new("top10", n), &n, |bench, _| {
             bench.iter(|| {

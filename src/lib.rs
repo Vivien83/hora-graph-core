@@ -155,7 +155,7 @@ impl HoraCore {
         if pending.is_empty() {
             return;
         }
-        let ids: Vec<EntityId> = pending.drain(..).collect();
+        let ids: Vec<EntityId> = std::mem::take(pending);
         for id in ids {
             self.record_access(id);
         }
@@ -301,7 +301,10 @@ impl HoraCore {
         // Index for BM25 full-text search (skip if lazy rebuild pending)
         if self.bm25_built.load(Ordering::Relaxed) {
             let text = bm25::entity_text(&entity.name, &entity.properties);
-            self.bm25_index.get_mut().unwrap().index_document(id.0 as u32, &text);
+            self.bm25_index
+                .get_mut()
+                .unwrap()
+                .index_document(id.0 as u32, &text);
         }
 
         // Initialize activation state
@@ -329,6 +332,7 @@ impl HoraCore {
     /// Deduplication is performed once against existing entities (single scan),
     /// not per entity. Intra-batch uniqueness is the caller's responsibility.
     /// Returns the IDs of all created (or deduplicated) entities, in order.
+    #[allow(clippy::type_complexity)]
     pub fn add_entities_batch(
         &mut self,
         entities: &[(&str, &str, Option<Properties>, Option<&[f32]>)],
@@ -482,7 +486,10 @@ impl HoraCore {
         // Re-index for BM25 (skip if lazy rebuild pending)
         if self.bm25_built.load(Ordering::Relaxed) {
             let text = bm25::entity_text(&entity.name, &entity.properties);
-            self.bm25_index.get_mut().unwrap().index_document(id.0 as u32, &text);
+            self.bm25_index
+                .get_mut()
+                .unwrap()
+                .index_document(id.0 as u32, &text);
         }
 
         self.storage.put_entity(entity)
@@ -502,7 +509,10 @@ impl HoraCore {
 
         self.storage.delete_entity(id)?;
         if self.bm25_built.load(Ordering::Relaxed) {
-            self.bm25_index.get_mut().unwrap().remove_document(id.0 as u32);
+            self.bm25_index
+                .get_mut()
+                .unwrap()
+                .remove_document(id.0 as u32);
         }
         self.activation_states.remove(&id);
         self.reconsolidation_states.remove(&id);
@@ -1491,7 +1501,10 @@ impl HoraCore {
     /// List entities filtered by type.
     pub fn list_entities_by_type(&self, entity_type: &str) -> Result<Vec<Entity>> {
         let all = self.storage.scan_all_entities()?;
-        Ok(all.into_iter().filter(|e| e.entity_type == entity_type).collect())
+        Ok(all
+            .into_iter()
+            .filter(|e| e.entity_type == entity_type)
+            .collect())
     }
 
     /// List entities with pagination (offset + limit).
@@ -1519,7 +1532,100 @@ impl HoraCore {
     /// List edges filtered by relation type.
     pub fn list_edges_by_relation(&self, relation: &str) -> Result<Vec<Edge>> {
         let all = self.storage.scan_all_edges()?;
-        Ok(all.into_iter().filter(|e| e.relation_type == relation).collect())
+        Ok(all
+            .into_iter()
+            .filter(|e| e.relation_type == relation)
+            .collect())
+    }
+
+    // --- Lookup & Property helpers ---
+
+    /// Find an entity by exact type and name. Returns `None` if not found.
+    pub fn find_entity_by_name(&self, entity_type: &str, name: &str) -> Result<Option<Entity>> {
+        self.storage.find_by_name(entity_type, name)
+    }
+
+    /// Find an existing entity by type+name, or create it if absent.
+    ///
+    /// Returns `(entity_id, created)` where `created` is `true` if a new entity was inserted.
+    pub fn find_or_create_entity(
+        &mut self,
+        entity_type: &str,
+        name: &str,
+        properties: Option<Properties>,
+        embedding: Option<&[f32]>,
+    ) -> Result<(EntityId, bool)> {
+        if let Some(existing) = self.storage.find_by_name(entity_type, name)? {
+            return Ok((existing.id, false));
+        }
+        let id = self.add_entity(entity_type, name, properties, embedding)?;
+        Ok((id, true))
+    }
+
+    /// Get a single property value from an entity without loading the full entity.
+    pub fn get_property(&self, id: EntityId, key: &str) -> Result<Option<PropertyValue>> {
+        let entity = self
+            .storage
+            .get_entity(id)?
+            .ok_or(HoraError::EntityNotFound(id.0))?;
+        Ok(entity.properties.get(key).cloned())
+    }
+
+    /// Set a single property on an entity (merge, not replace).
+    ///
+    /// Inserts the key if absent, overwrites if present. Other properties are untouched.
+    pub fn set_property(&mut self, id: EntityId, key: &str, value: PropertyValue) -> Result<()> {
+        let mut entity = self
+            .storage
+            .get_entity(id)?
+            .ok_or(HoraError::EntityNotFound(id.0))?;
+        entity.properties.insert(key.to_string(), value);
+
+        // Re-index for BM25 (skip if lazy rebuild pending)
+        if self.bm25_built.load(Ordering::Relaxed) {
+            let text = bm25::entity_text(&entity.name, &entity.properties);
+            self.bm25_index
+                .get_mut()
+                .unwrap()
+                .index_document(id.0 as u32, &text);
+        }
+
+        self.storage.put_entity(entity)
+    }
+
+    /// Increment an integer property by `delta`. Creates the property (starting at 0) if absent.
+    ///
+    /// Returns the new value after increment.
+    pub fn increment_property(&mut self, id: EntityId, key: &str, delta: i64) -> Result<i64> {
+        let mut entity = self
+            .storage
+            .get_entity(id)?
+            .ok_or(HoraError::EntityNotFound(id.0))?;
+        let current = entity
+            .properties
+            .get(key)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let new_val = current + delta;
+        entity
+            .properties
+            .insert(key.to_string(), PropertyValue::Int(new_val));
+        self.storage.put_entity(entity)?;
+        Ok(new_val)
+    }
+
+    /// List entities filtered by type and optional property key/value.
+    ///
+    /// If only `prop_key` is given, returns entities that have that property (any value).
+    /// If both `prop_key` and `prop_value` are given, matches exact value.
+    pub fn list_entities_filtered(
+        &self,
+        entity_type: &str,
+        prop_key: Option<&str>,
+        prop_value: Option<&PropertyValue>,
+    ) -> Result<Vec<Entity>> {
+        self.storage
+            .scan_entities_filtered(entity_type, prop_key, prop_value)
     }
 
     // --- Stats ---
@@ -3951,5 +4057,137 @@ mod tests {
         assert!(hora.get_entity(c).unwrap().is_some());
         // Edge should be cascade-deleted
         assert_eq!(hora.list_edges().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_find_entity_by_name() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        hora.add_entity("_skill", "web_search", None, None).unwrap();
+        hora.add_entity("_skill", "shell_exec", None, None).unwrap();
+        hora.add_entity("_hand", "web_search", None, None).unwrap(); // same name, different type
+
+        let found = hora.find_entity_by_name("_skill", "web_search").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().entity_type, "_skill");
+
+        let not_found = hora.find_entity_by_name("_skill", "nope").unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_find_or_create_entity() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+
+        // First call creates
+        let (id1, created1) = hora
+            .find_or_create_entity("_self", "agent", None, None)
+            .unwrap();
+        assert!(created1);
+
+        // Second call finds existing
+        let (id2, created2) = hora
+            .find_or_create_entity("_self", "agent", None, None)
+            .unwrap();
+        assert!(!created2);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_get_property() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let props = props! { "status" => "active", "count" => 42 };
+        let id = hora
+            .add_entity("_hand", "health", Some(props), None)
+            .unwrap();
+
+        assert_eq!(
+            hora.get_property(id, "status").unwrap(),
+            Some(PropertyValue::String("active".to_string()))
+        );
+        assert_eq!(
+            hora.get_property(id, "count").unwrap(),
+            Some(PropertyValue::Int(42))
+        );
+        assert_eq!(hora.get_property(id, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn test_set_property() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let props = props! { "status" => "active", "version" => "1.0" };
+        let id = hora
+            .add_entity("_self", "agent", Some(props), None)
+            .unwrap();
+
+        // Update existing property
+        hora.set_property(id, "status", PropertyValue::String("paused".to_string()))
+            .unwrap();
+        // Add new property
+        hora.set_property(id, "uptime", PropertyValue::Int(3600))
+            .unwrap();
+
+        let entity = hora.get_entity(id).unwrap().unwrap();
+        assert_eq!(
+            entity.properties.get("status"),
+            Some(&PropertyValue::String("paused".to_string()))
+        );
+        assert_eq!(
+            entity.properties.get("version"),
+            Some(&PropertyValue::String("1.0".to_string()))
+        );
+        assert_eq!(
+            entity.properties.get("uptime"),
+            Some(&PropertyValue::Int(3600))
+        );
+    }
+
+    #[test]
+    fn test_increment_property() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let id = hora.add_entity("_skill", "search", None, None).unwrap();
+
+        // Creates property from zero
+        let val = hora.increment_property(id, "success_count", 1).unwrap();
+        assert_eq!(val, 1);
+
+        // Increments existing
+        let val = hora.increment_property(id, "success_count", 1).unwrap();
+        assert_eq!(val, 2);
+
+        // Negative delta
+        let val = hora.increment_property(id, "success_count", -1).unwrap();
+        assert_eq!(val, 1);
+    }
+
+    #[test]
+    fn test_list_entities_filtered() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let p1 = props! { "status" => "active" };
+        let p2 = props! { "status" => "paused" };
+        let p3 = props! { "status" => "active" };
+        hora.add_entity("_skill", "a", Some(p1), None).unwrap();
+        hora.add_entity("_skill", "b", Some(p2), None).unwrap();
+        hora.add_entity("_hand", "c", Some(p3), None).unwrap();
+
+        // Filter by type only
+        let skills = hora.list_entities_filtered("_skill", None, None).unwrap();
+        assert_eq!(skills.len(), 2);
+
+        // Filter by type + property key + value
+        let active_skills = hora
+            .list_entities_filtered(
+                "_skill",
+                Some("status"),
+                Some(&PropertyValue::String("active".to_string())),
+            )
+            .unwrap();
+        assert_eq!(active_skills.len(), 1);
+        assert_eq!(active_skills[0].name, "a");
+
+        // Filter by type + property key existence
+        let with_status = hora
+            .list_entities_filtered("_skill", Some("status"), None)
+            .unwrap();
+        assert_eq!(with_status.len(), 2);
     }
 }
