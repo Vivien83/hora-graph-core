@@ -30,6 +30,8 @@ pub use crate::storage::format::{verify_file, VerifyReport};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use crate::core::types::now_millis;
 use crate::memory::activation::ActivationState;
@@ -57,9 +59,9 @@ pub struct HoraCore {
     next_edge_id: u64,
     next_episode_id: u64,
     file_path: Option<PathBuf>,
-    bm25_index: Bm25Index,
-    bm25_built: bool,
-    pending_accesses: Vec<EntityId>,
+    bm25_index: Mutex<Bm25Index>,
+    bm25_built: AtomicBool,
+    pending_accesses: Mutex<Vec<EntityId>>,
     activation_states: HashMap<EntityId, ActivationState>,
     reconsolidation_states: HashMap<EntityId, ReconsolidationState>,
     reconsolidation_params: ReconsolidationParams,
@@ -79,9 +81,9 @@ impl HoraCore {
             next_edge_id: 1,
             next_episode_id: 1,
             file_path: None,
-            bm25_index: Bm25Index::new(),
-            bm25_built: true,
-            pending_accesses: Vec::new(),
+            bm25_index: Mutex::new(Bm25Index::new()),
+            bm25_built: AtomicBool::new(true),
+            pending_accesses: Mutex::new(Vec::new()),
             activation_states: HashMap::new(),
             reconsolidation_states: HashMap::new(),
             reconsolidation_params: ReconsolidationParams::default(),
@@ -126,9 +128,9 @@ impl HoraCore {
                 next_edge_id: graph.header.next_edge_id,
                 next_episode_id: graph.header.next_episode_id,
                 file_path: Some(path),
-                bm25_index: Bm25Index::new(),
-                bm25_built: false,
-                pending_accesses: Vec::new(),
+                bm25_index: Mutex::new(Bm25Index::new()),
+                bm25_built: AtomicBool::new(false),
+                pending_accesses: Mutex::new(Vec::new()),
                 activation_states: HashMap::new(),
                 reconsolidation_states: HashMap::new(),
                 reconsolidation_params: ReconsolidationParams::default(),
@@ -149,25 +151,32 @@ impl HoraCore {
 
     /// Flush pending access events to activation tracking.
     fn flush_accesses(&mut self) {
-        if self.pending_accesses.is_empty() {
+        let pending = self.pending_accesses.get_mut().unwrap();
+        if pending.is_empty() {
             return;
         }
-        let ids: Vec<EntityId> = self.pending_accesses.drain(..).collect();
+        let ids: Vec<EntityId> = pending.drain(..).collect();
         for id in ids {
             self.record_access(id);
         }
     }
 
     /// Build the BM25 index from all entities if not already built.
-    fn ensure_bm25(&mut self) -> Result<()> {
-        if !self.bm25_built {
-            let entities = self.storage.scan_all_entities()?;
-            for entity in &entities {
-                let text = bm25::entity_text(&entity.name, &entity.properties);
-                self.bm25_index.index_document(entity.id.0 as u32, &text);
-            }
-            self.bm25_built = true;
+    fn ensure_bm25(&self) -> Result<()> {
+        if self.bm25_built.load(Ordering::Acquire) {
+            return Ok(());
         }
+        let mut bm25 = self.bm25_index.lock().unwrap();
+        // Double-check after acquiring lock
+        if self.bm25_built.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let entities = self.storage.scan_all_entities()?;
+        for entity in &entities {
+            let text = bm25::entity_text(&entity.name, &entity.properties);
+            bm25.index_document(entity.id.0 as u32, &text);
+        }
+        self.bm25_built.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -290,9 +299,9 @@ impl HoraCore {
         };
 
         // Index for BM25 full-text search (skip if lazy rebuild pending)
-        if self.bm25_built {
+        if self.bm25_built.load(Ordering::Relaxed) {
             let text = bm25::entity_text(&entity.name, &entity.properties);
-            self.bm25_index.index_document(id.0 as u32, &text);
+            self.bm25_index.get_mut().unwrap().index_document(id.0 as u32, &text);
         }
 
         // Initialize activation state
@@ -319,10 +328,10 @@ impl HoraCore {
     ///
     /// Side-effect: buffers an access event for ACT-R activation tracking.
     /// The actual activation computation is deferred until needed.
-    pub fn get_entity(&mut self, id: EntityId) -> Result<Option<Entity>> {
+    pub fn get_entity(&self, id: EntityId) -> Result<Option<Entity>> {
         let entity = self.storage.get_entity(id)?;
         if entity.is_some() {
-            self.pending_accesses.push(id);
+            self.pending_accesses.lock().unwrap().push(id);
         }
         Ok(entity)
     }
@@ -360,9 +369,9 @@ impl HoraCore {
         }
 
         // Re-index for BM25 (skip if lazy rebuild pending)
-        if self.bm25_built {
+        if self.bm25_built.load(Ordering::Relaxed) {
             let text = bm25::entity_text(&entity.name, &entity.properties);
-            self.bm25_index.index_document(id.0 as u32, &text);
+            self.bm25_index.get_mut().unwrap().index_document(id.0 as u32, &text);
         }
 
         self.storage.put_entity(entity)
@@ -381,8 +390,8 @@ impl HoraCore {
         }
 
         self.storage.delete_entity(id)?;
-        if self.bm25_built {
-            self.bm25_index.remove_document(id.0 as u32);
+        if self.bm25_built.load(Ordering::Relaxed) {
+            self.bm25_index.get_mut().unwrap().remove_document(id.0 as u32);
         }
         self.activation_states.remove(&id);
         self.reconsolidation_states.remove(&id);
@@ -617,9 +626,9 @@ impl HoraCore {
     ///
     /// Returns the top `k` matching entities. Entities without indexable text
     /// are invisible to BM25.
-    pub fn text_search(&mut self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
+    pub fn text_search(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
         self.ensure_bm25()?;
-        Ok(self.bm25_index.search(query, k))
+        Ok(self.bm25_index.lock().unwrap().search(query, k))
     }
 
     // --- Hybrid Search ---
@@ -652,7 +661,7 @@ impl HoraCore {
         // BM25 leg
         let bm25_results = if let Some(text) = query_text {
             self.ensure_bm25()?;
-            let results = self.bm25_index.search(text, candidate_k);
+            let results = self.bm25_index.get_mut().unwrap().search(text, candidate_k);
             if results.is_empty() {
                 None
             } else {
@@ -1446,7 +1455,7 @@ mod tests {
 
     #[test]
     fn test_entity_not_found() {
-        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let hora = HoraCore::new(HoraConfig::default()).unwrap();
         let result = hora.get_entity(EntityId(999)).unwrap();
         assert!(result.is_none());
     }
@@ -1934,7 +1943,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
             let stats = hora.stats().unwrap();
             assert_eq!(stats.entities, 2);
             assert_eq!(stats.edges, 1);
@@ -1990,7 +1999,7 @@ mod tests {
         }
 
         {
-            let mut hora = HoraCore::open(&path, config).unwrap();
+            let hora = HoraCore::open(&path, config).unwrap();
             let e = hora.get_entity(EntityId(1)).unwrap().unwrap();
             assert_eq!(e.embedding.as_ref().unwrap(), &[1.0, 2.0, 3.0]);
         }
@@ -2111,7 +2120,7 @@ mod tests {
         }
 
         {
-            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
             let e = hora.get_entity(EntityId(1)).unwrap().unwrap();
             assert_eq!(
                 e.properties.get("name"),
@@ -2360,7 +2369,7 @@ mod tests {
 
         // Reopen → BM25 index rebuilt from entities
         {
-            let mut hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
+            let hora = HoraCore::open(&path, HoraConfig::default()).unwrap();
             let results = hora.text_search("hora", 10).unwrap();
             assert_eq!(results.len(), 1);
 
