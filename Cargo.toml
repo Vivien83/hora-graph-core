@@ -24,11 +24,13 @@ exclude = [
 [features]
 default = ["embedded"]
 embedded = []
+serde = ["dep:serde"]
 sqlite = ["dep:rusqlite"]
 postgres = ["dep:postgres"]
 wasm = ["dep:js-sys"]
 
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 postgres = { version = "0.19", optional = true }
 js-sys = { version = "0.3", optional = true }

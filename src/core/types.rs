@@ -25,16 +25,72 @@ impl fmt::Display for EdgeId {
 
 /// A property value attached to an entity.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(untagged))]
 pub enum PropertyValue {
-    /// UTF-8 string value.
-    String(std::string::String),
+    /// Boolean value.
+    Bool(bool),
     /// 64-bit signed integer value.
     Int(i64),
     /// 64-bit floating-point value.
     Float(f64),
-    /// Boolean value.
-    Bool(bool),
+    /// UTF-8 string value.
+    String(std::string::String),
+}
+
+impl PropertyValue {
+    /// Returns the string value, if this is a `String` variant.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns the i64 value, if this is an `Int` variant.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Int(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Returns the f64 value, if this is a `Float` variant.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Float(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Returns the bool value, if this is a `Bool` variant.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Lossy string conversion for display purposes.
+    pub fn to_string_lossy(&self) -> std::string::String {
+        match self {
+            Self::String(s) => s.clone(),
+            Self::Int(v) => v.to_string(),
+            Self::Float(v) => v.to_string(),
+            Self::Bool(v) => v.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for PropertyValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::String(s) => write!(f, "{}", s),
+            Self::Int(v) => write!(f, "{}", v),
+            Self::Float(v) => write!(f, "{}", v),
+            Self::Bool(v) => write!(f, "{}", v),
+        }
+    }
 }
 
 impl From<&str> for PropertyValue {
@@ -193,7 +249,7 @@ pub struct HoraConfig {
 }
 
 /// Summary statistics for the knowledge graph.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[must_use]
 pub struct StorageStats {
     /// Total number of entities in the graph.
