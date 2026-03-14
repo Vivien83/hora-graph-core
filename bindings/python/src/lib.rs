@@ -31,7 +31,6 @@ fn props_to_py(py: Python<'_>, props: &Properties) -> PyObject {
             PropertyValue::Int(i) => dict.set_item(k, i).unwrap(),
             PropertyValue::Float(f) => dict.set_item(k, f).unwrap(),
             PropertyValue::Bool(b) => dict.set_item(k, b).unwrap(),
-            _ => dict.set_item(k, format!("{:?}", v)).unwrap(),
         };
     }
     dict.into()

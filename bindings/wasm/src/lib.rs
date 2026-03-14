@@ -56,7 +56,6 @@ fn props_to_js(props: &Properties) -> JsValue {
             PropertyValue::Int(i) => (*i as f64).into(),
             PropertyValue::Float(f) => (*f).into(),
             PropertyValue::Bool(b) => (*b).into(),
-            _ => format!("{:?}", v).into(),
         };
         let _ = js_sys::Reflect::set(&obj, &k.into(), &jv);
     }

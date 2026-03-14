@@ -114,7 +114,6 @@ fn props_to_js(props: &Properties) -> HashMap<String, String> {
                 PropertyValue::Int(i) => i.to_string(),
                 PropertyValue::Float(f) => f.to_string(),
                 PropertyValue::Bool(b) => b.to_string(),
-                _ => format!("{:?}", v),
             };
             (k.clone(), s)
         })
