@@ -33,3 +33,19 @@ impl Default for SearchOpts {
         }
     }
 }
+
+impl SearchOpts {
+    /// Create search options with a result limit.
+    pub fn new(top_k: usize) -> Self {
+        Self {
+            top_k,
+            ..Default::default()
+        }
+    }
+
+    /// Include dark (low-activation) nodes in results.
+    pub fn with_dark(mut self) -> Self {
+        self.include_dark = true;
+        self
+    }
+}

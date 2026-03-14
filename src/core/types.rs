@@ -183,6 +183,18 @@ impl Default for TraverseOpts {
     }
 }
 
+impl TraverseOpts {
+    /// Create traverse options with maximum depth.
+    pub fn new(max_depth: u32) -> Self {
+        Self { depth: max_depth }
+    }
+
+    /// Alias for `depth` — reads better in calling code.
+    pub fn max_depth(&self) -> u32 {
+        self.depth
+    }
+}
+
 /// Result of a graph traversal.
 #[derive(Debug, Clone)]
 #[must_use]
