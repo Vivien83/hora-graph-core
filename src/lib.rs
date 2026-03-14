@@ -1361,6 +1361,47 @@ impl HoraCore {
         }
     }
 
+    // --- Listing ---
+
+    /// List all entities in the graph.
+    pub fn list_entities(&self) -> Result<Vec<Entity>> {
+        self.storage.scan_all_entities()
+    }
+
+    /// List entities filtered by type.
+    pub fn list_entities_by_type(&self, entity_type: &str) -> Result<Vec<Entity>> {
+        let all = self.storage.scan_all_entities()?;
+        Ok(all.into_iter().filter(|e| e.entity_type == entity_type).collect())
+    }
+
+    /// List entities with pagination (offset + limit).
+    pub fn list_entities_paginated(&self, offset: usize, limit: usize) -> Result<Vec<Entity>> {
+        let all = self.storage.scan_all_entities()?;
+        Ok(all.into_iter().skip(offset).take(limit).collect())
+    }
+
+    /// Count entities, optionally filtered by type.
+    pub fn count_entities(&self, entity_type: Option<&str>) -> Result<u64> {
+        match entity_type {
+            Some(t) => {
+                let all = self.storage.scan_all_entities()?;
+                Ok(all.iter().filter(|e| e.entity_type == t).count() as u64)
+            }
+            None => Ok(self.storage.stats().entities),
+        }
+    }
+
+    /// List all edges in the graph.
+    pub fn list_edges(&self) -> Result<Vec<Edge>> {
+        self.storage.scan_all_edges()
+    }
+
+    /// List edges filtered by relation type.
+    pub fn list_edges_by_relation(&self, relation: &str) -> Result<Vec<Edge>> {
+        let all = self.storage.scan_all_edges()?;
+        Ok(all.into_iter().filter(|e| e.relation_type == relation).collect())
+    }
+
     // --- Stats ---
 
     /// Get summary statistics about the knowledge graph.
