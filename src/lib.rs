@@ -324,6 +324,117 @@ impl HoraCore {
         Ok(id)
     }
 
+    /// Add multiple entities in a single batch.
+    ///
+    /// Deduplication is performed once against existing entities (single scan),
+    /// not per entity. Intra-batch uniqueness is the caller's responsibility.
+    /// Returns the IDs of all created (or deduplicated) entities, in order.
+    pub fn add_entities_batch(
+        &mut self,
+        entities: &[(&str, &str, Option<Properties>, Option<&[f32]>)],
+    ) -> Result<Vec<EntityId>> {
+        let candidates = if self.config.dedup.enabled {
+            self.storage.scan_all_entities()?
+        } else {
+            vec![]
+        };
+
+        let mut ids = Vec::with_capacity(entities.len());
+
+        for (entity_type, name, properties, embedding) in entities {
+            if let Some(emb) = embedding {
+                if self.config.embedding_dims == 0 {
+                    return Err(HoraError::DimensionMismatch {
+                        expected: 0,
+                        got: emb.len(),
+                    });
+                }
+                if emb.len() != self.config.embedding_dims as usize {
+                    return Err(HoraError::DimensionMismatch {
+                        expected: self.config.embedding_dims as usize,
+                        got: emb.len(),
+                    });
+                }
+            }
+
+            if self.config.dedup.enabled {
+                if let Some(existing_id) = crate::core::dedup::find_duplicate(
+                    name,
+                    *embedding,
+                    entity_type,
+                    &candidates,
+                    &self.config.dedup,
+                ) {
+                    ids.push(existing_id);
+                    continue;
+                }
+            }
+
+            let id = EntityId(self.next_entity_id);
+            self.next_entity_id += 1;
+            let now = now_millis();
+
+            let entity = Entity {
+                id,
+                entity_type: entity_type.to_string(),
+                name: name.to_string(),
+                properties: properties.clone().unwrap_or_default(),
+                embedding: embedding.map(|e| e.to_vec()),
+                created_at: now,
+            };
+
+            let now_secs = now as f64 / 1000.0;
+            let mut act_state = ActivationState::new(now_secs);
+            act_state.record_access(now_secs);
+            self.activation_states.insert(id, act_state);
+            self.reconsolidation_states
+                .insert(id, ReconsolidationState::new());
+            self.fsrs_states.insert(
+                id,
+                FsrsState::new(now_secs, self.fsrs_params.initial_stability_days),
+            );
+
+            self.storage.put_entity(entity)?;
+            ids.push(id);
+        }
+
+        // Invalidate BM25 for lazy rebuild (cheaper than indexing each individually)
+        if !ids.is_empty() {
+            self.bm25_built.store(false, Ordering::Relaxed);
+        }
+
+        Ok(ids)
+    }
+
+    /// Add multiple facts (edges) in a single batch.
+    ///
+    /// Each tuple is `(source, target, relation, description, confidence)`.
+    /// Returns the IDs of all created edges, in order.
+    pub fn add_facts_batch(
+        &mut self,
+        facts: &[(EntityId, EntityId, &str, &str, Option<f32>)],
+    ) -> Result<Vec<EdgeId>> {
+        let mut ids = Vec::with_capacity(facts.len());
+        for (source, target, relation, description, confidence) in facts {
+            let id = self.add_fact(*source, *target, relation, description, *confidence)?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// Delete multiple entities in a single batch.
+    ///
+    /// Also cascade-deletes all edges connected to deleted entities.
+    /// Returns the number of entities successfully deleted.
+    pub fn delete_entities_batch(&mut self, ids: &[EntityId]) -> Result<u32> {
+        let mut deleted = 0u32;
+        for &id in ids {
+            self.delete_entity(id)?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
     /// Get an entity by ID. Returns `None` if not found.
     ///
     /// Side-effect: buffers an access event for ACT-R activation tracking.
@@ -3780,5 +3891,65 @@ mod tests {
         for w in eps.windows(2) {
             assert!(w[0].created_at <= w[1].created_at);
         }
+    }
+
+    #[test]
+    fn test_add_entities_batch() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+
+        let batch = vec![
+            ("project", "hora", None, None),
+            ("language", "Rust", None, None),
+            ("language", "TypeScript", None, None),
+        ];
+        let ids = hora.add_entities_batch(&batch).unwrap();
+
+        assert_eq!(ids.len(), 3);
+        let e1 = hora.get_entity(ids[0]).unwrap().unwrap();
+        assert_eq!(e1.name, "hora");
+        assert_eq!(e1.entity_type, "project");
+
+        let e3 = hora.get_entity(ids[2]).unwrap().unwrap();
+        assert_eq!(e3.name, "TypeScript");
+
+        // BM25 should rebuild lazily
+        let results = hora.text_search("hora", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_add_facts_batch() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+
+        let facts = vec![
+            (a, b, "knows", "A knows B", None),
+            (b, c, "knows", "B knows C", None),
+        ];
+        let edge_ids = hora.add_facts_batch(&facts).unwrap();
+        assert_eq!(edge_ids.len(), 2);
+
+        let edges = hora.list_edges().unwrap();
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_entities_batch() {
+        let mut hora = HoraCore::new(HoraConfig::default()).unwrap();
+        let a = hora.add_entity("node", "A", None, None).unwrap();
+        let b = hora.add_entity("node", "B", None, None).unwrap();
+        let c = hora.add_entity("node", "C", None, None).unwrap();
+        hora.add_fact(a, b, "rel", "desc", None).unwrap();
+
+        let deleted = hora.delete_entities_batch(&[a, b]).unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(hora.get_entity(a).unwrap().is_none());
+        assert!(hora.get_entity(b).unwrap().is_none());
+        assert!(hora.get_entity(c).unwrap().is_some());
+        // Edge should be cascade-deleted
+        assert_eq!(hora.list_edges().unwrap().len(), 0);
     }
 }
