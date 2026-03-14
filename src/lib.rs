@@ -3596,9 +3596,22 @@ mod tests {
         let after_b = hora.get_activation(b).unwrap();
         let after_c = hora.get_activation(c).unwrap();
 
-        assert!((after_a - before_a * 0.78).abs() < 1e-10);
-        assert!((after_b - before_b * 0.78).abs() < 1e-10);
-        assert!((after_c - before_c * 0.78).abs() < 1e-10);
+        // Tolerance accounts for time-dependent BLL recomputation between before/after reads
+        assert!(
+            (after_a - before_a * 0.78).abs() < 0.05,
+            "a: expected ~{}, got {after_a}",
+            before_a * 0.78
+        );
+        assert!(
+            (after_b - before_b * 0.78).abs() < 0.05,
+            "b: expected ~{}, got {after_b}",
+            before_b * 0.78
+        );
+        assert!(
+            (after_c - before_c * 0.78).abs() < 0.05,
+            "c: expected ~{}, got {after_c}",
+            before_c * 0.78
+        );
     }
 
     // --- Interleaved Replay ---
